@@ -58,11 +58,11 @@ class VisualFeatureCNNExtractor(nn.Module):
 
 class VisualGPController(gpytorch.models.ExactGP):
     """
-    TODO: use a pre-trained visual feature extractor?
-    TODO: ExactGP is not compatible with image inputs. 
-        In exact_gp.py: 298, it requires test inputs to have the 
-        same batch dim as the training inputs, but why???
-    TODO: train a GP incrementally
+    TODO: use variational gp 
+    Idea: use a pre-trained visual feature extractor?
+        Ans: Not the best practice
+    Idea: train a GP incrementally
+        Ans: use model.set_train_data()
     """
 
     def __init__(self,
@@ -85,6 +85,7 @@ class VisualGPController(gpytorch.models.ExactGP):
         self.covar_module = gpytorch.kernels.ScaleKernel(
             gpytorch.kernels.RBFKernel())
 
+        self.img_dim = img_dim
         self.feature_extractor = VisualFeatureCNNExtractor(
             img_dim=img_dim, device=device)
 
@@ -100,6 +101,7 @@ class VisualGPController(gpytorch.models.ExactGP):
         Returns:
             gpytorch distribution 
         """
+        img = img.reshape((img.shape[0], 3, self.img_dim, self.img_dim))
         latent = self.feature_extractor(img)
         mean_a = self.mean_module(latent)
         covar_a = self.covar_module(latent)

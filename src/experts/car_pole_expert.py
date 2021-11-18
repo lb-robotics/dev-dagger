@@ -1,5 +1,7 @@
 import numpy as np
 import gym
+import imageio
+import os
 
 
 def sigmoid(x):
@@ -40,15 +42,30 @@ class ExpertCartPole():
 if __name__ == "__main__":
     env = gym.make('CartPole-v1')
     controller = ExpertCartPole()
+    figures_path = os.path.join("img", "cart_pole_expert")
+    os.makedirs(figures_path, exist_ok=True)
+    epsilon = 0.2
 
     for i_episode in range(20):
         state = env.reset()
-        for t in range(500):
-            env.render()
+        gif = []
+        for t in range(50):
+            img = env.render(mode="rgb_array")
+            gif.append(img)
             action = controller.control(state)
 
-            state, reward, done, info = env.step(action)
+            choice = np.random.uniform(0, 1)
+            if choice < epsilon:
+                state, reward, done, info = env.step(env.action_space.sample())
+            else:
+                state, reward, done, info = env.step(action)
+
             if done:
                 print("Episode finished after {} timesteps".format(t + 1))
                 break
+        record_path = os.path.join(
+            figures_path,
+            'random_' + str(epsilon) + '_rollout' + str(i_episode) + '.gif')
+        imageio.mimwrite(record_path, gif)
+
     env.close()
