@@ -1,4 +1,3 @@
-from gpytorch.means import mean
 import numpy as np
 import torch
 import gpytorch
@@ -42,10 +41,10 @@ class NoviceCartPole():
                 likelihood=self.likelihood,
                 num_frames=self.num_frames)
 
-    def control(self, img):
-        # reshape img to (# imgs, -1)
-        img = img.reshape((img.shape[0], -1))
-        out_distribution = self.controller(img)
+    def control(self, obs):
+        # reshape obs to (# of obs, -1)
+        obs = obs.reshape((obs.shape[0], -1))
+        out_distribution = self.controller(obs)
         return out_distribution.mean, out_distribution.variance
 
     def train(self, iters, optimizer, train_x, train_y) -> None:
@@ -87,6 +86,7 @@ if __name__ == "__main__":
         expert = ExpertCartPole()
         state = env.reset()
         for t in range(100):
+            action = expert.control(state)
             if not use_gt_states:
                 img = env.render(mode="rgb_array")
                 img_transform = tf.Compose([tf.ToTensor(), tf.Resize((64, 64))])
@@ -94,12 +94,11 @@ if __name__ == "__main__":
                 if t >= MODEL_INPUT_FRAMES - 1:
                     stack_img = torch.cat([prev_img, img], dim=0)
                     train_inputs.append(stack_img)
+                    train_actions.append(
+                        torch.tensor(action.astype(np.float32)))
                 prev_img = img.clone()
             else:
                 train_inputs.append(torch.tensor(state))
-
-            action = expert.control(state)
-            if t >= MODEL_INPUT_FRAMES - 1:
                 train_actions.append(torch.tensor(action.astype(np.float32)))
 
             choice = np.random.uniform(0, 1)
