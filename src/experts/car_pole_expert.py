@@ -3,12 +3,14 @@ import gym
 import imageio
 import os
 
+from src.model.policy_base import BasePolicy
+
 
 def sigmoid(x):
     return 1.0 / (1.0 + np.exp(-x))
 
 
-class ExpertCartPole():
+class ExpertCartPole(BasePolicy):
 
     def __init__(self, P: float = 0.1, I: float = 0.01, D: float = 0.5) -> None:
         # (x, x_dot, theta, theta_dot)
@@ -23,8 +25,8 @@ class ExpertCartPole():
         self.integral = 0
         self.prev_error = 0
 
-    def control(self, state: np.ndarray) -> np.ndarray:
-        error = state - self.desired_state
+    def control(self, observation: np.ndarray) -> np.ndarray:
+        error = observation - self.desired_state
 
         self.integral += error
         derivative = error - self.prev_error

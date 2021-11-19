@@ -10,12 +10,13 @@ import os
 
 from src.model.visual_controller import GPController, VisualGPController
 from src.experts.car_pole_expert import ExpertCartPole
+from src.model.policy_base import BasePolicy
 
 VISUALIZE_EXPERT_DATA = False
 MODEL_INPUT_FRAMES = 2  # only 2 frames are supported
 
 
-class NoviceCartPole():
+class NoviceCartPole(BasePolicy):
 
     def __init__(self, num_frames=1, use_gt_states=False) -> None:
         self.controller = None
@@ -41,10 +42,10 @@ class NoviceCartPole():
                 likelihood=self.likelihood,
                 num_frames=self.num_frames)
 
-    def control(self, obs):
-        # reshape obs to (# of obs, -1)
-        obs = obs.reshape((obs.shape[0], -1))
-        out_distribution = self.controller(obs)
+    def control(self, observation):
+        # reshape observation to (# of observation, -1)
+        observation = observation.reshape((observation.shape[0], -1))
+        out_distribution = self.controller(observation)
         return out_distribution.mean, out_distribution.variance
 
     def train(self, iters, optimizer, train_x, train_y) -> None:
