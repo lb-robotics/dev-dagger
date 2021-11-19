@@ -6,7 +6,11 @@ import gpytorch
 
 class VisualFeatureCNNExtractor(nn.Module):
 
-    def __init__(self, img_dim: int = 64, device='cuda'):
+    def __init__(self,
+                 cnn_scaling: int = 1,
+                 in_feats: int = 3,
+                 img_dim: int = 64,
+                 device='cuda'):
         super().__init__()
 
         self.device = device
@@ -14,9 +18,9 @@ class VisualFeatureCNNExtractor(nn.Module):
 
         model = []
         """ Convolutional part """
-        in_feats = 3
-        out_feats = in_feats
-        for _ in range(2):
+        out_feats = cnn_scaling * in_feats
+        num_deep_layers = 2
+        for _ in range(num_deep_layers):
             model += [
                 nn.Conv2d(
                     in_channels=in_feats,
@@ -29,17 +33,15 @@ class VisualFeatureCNNExtractor(nn.Module):
             ]
             model += [nn.MaxPool2d(kernel_size=2, stride=2)]
             in_feats = out_feats
-            out_feats *= 1
+            out_feats *= cnn_scaling
 
         self.model = nn.Sequential(*model)
 
-        in_feats_head = int(in_feats * (self.img_dim / 2**2)**2)
+        in_feats_head = int(in_feats * (self.img_dim / num_deep_layers**2)**2)
         self.extractor_head = nn.Sequential(
             nn.Linear(in_features=in_feats_head, out_features=in_feats_head),
             nn.ReLU(),
-            nn.Linear(in_features=in_feats_head, out_features=in_feats_head),
-            nn.ReLU(),
-            nn.Linear(in_features=in_feats_head, out_features=32),
+            nn.Linear(in_features=in_feats_head, out_features=8),
         ).to(self.device)
 
         self.to(self.device)
@@ -69,14 +71,15 @@ class VisualGPController(gpytorch.models.ExactGP):
                  train_x: torch.Tensor,
                  train_y: torch.Tensor,
                  likelihood,
+                 num_frames: int = 1,
                  img_dim: int = 64,
                  device='cuda') -> None:
-        """[summary]
-
+        """
         Args:
             train_x (torch.Tensor): training images
             train_y (torch.Tensor): corresponding actions in demonstration
             likelihood ([type]): gpytorch.likelihoods.GaussianLikelihood()
+            num_frames (int): number of input num_frames
             img_dim (int, optional): [description]. Defaults to 64.
             device (str, optional): [description]. Defaults to 'cuda'.
         """
@@ -86,22 +89,23 @@ class VisualGPController(gpytorch.models.ExactGP):
             gpytorch.kernels.RBFKernel())
 
         self.img_dim = img_dim
+        self.num_frames = num_frames
         self.feature_extractor = VisualFeatureCNNExtractor(
-            img_dim=img_dim, device=device)
+            in_feats=num_frames * 3, img_dim=img_dim, device=device)
 
         self.to(device)
 
     def forward(self,
                 img: torch.Tensor) -> gpytorch.distributions.MultivariateNormal:
-        """[summary]
-
+        """
         Args:
             img (torch.Tensor): visual observation on device
 
         Returns:
             gpytorch distribution 
         """
-        img = img.reshape((img.shape[0], 3, self.img_dim, self.img_dim))
+        img = img.reshape(
+            (img.shape[0], self.num_frames * 3, self.img_dim, self.img_dim))
         latent = self.feature_extractor(img)
         mean_a = self.mean_module(latent)
         covar_a = self.covar_module(latent)
@@ -115,8 +119,7 @@ class GPController(gpytorch.models.ExactGP):
                  train_y: torch.Tensor,
                  likelihood,
                  device='cuda') -> None:
-        """[summary]
-
+        """
         Args:
             train_x (torch.Tensor): training states
             train_y (torch.Tensor): corresponding actions in demonstration
@@ -133,8 +136,7 @@ class GPController(gpytorch.models.ExactGP):
     def forward(
             self,
             states: torch.Tensor) -> gpytorch.distributions.MultivariateNormal:
-        """[summary]
-
+        """
         Args:
             states (torch.Tensor): input ground truth states
 

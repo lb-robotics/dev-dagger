@@ -1,3 +1,4 @@
+from gpytorch.means import mean
 import numpy as np
 import torch
 import gpytorch
@@ -12,15 +13,17 @@ from src.model.visual_controller import GPController, VisualGPController
 from src.experts.car_pole_expert import ExpertCartPole
 
 VISUALIZE_EXPERT_DATA = False
+MODEL_INPUT_FRAMES = 2  # only 2 frames are supported
 
 
 class NoviceCartPole():
 
-    def __init__(self, use_gt_states=False) -> None:
+    def __init__(self, num_frames=1, use_gt_states=False) -> None:
         self.controller = None
         self.use_gt_states = use_gt_states
+        self.num_frames = num_frames
 
-    def fit_model(
+    def create_model(
         self,
         img_train: torch.Tensor,
         action_train: torch.Tensor,
@@ -36,7 +39,8 @@ class NoviceCartPole():
             self.controller = VisualGPController(
                 train_x=img_train,
                 train_y=action_train,
-                likelihood=self.likelihood)
+                likelihood=self.likelihood,
+                num_frames=self.num_frames)
 
     def control(self, img):
         # reshape img to (# imgs, -1)
@@ -73,12 +77,13 @@ if __name__ == "__main__":
 
     env = gym.make('CartPole-v1')
     use_gt_states = False
-    novice = NoviceCartPole(use_gt_states=use_gt_states)
+    novice = NoviceCartPole(
+        num_frames=MODEL_INPUT_FRAMES, use_gt_states=use_gt_states)
     """ Collect demonstration dataset """
     train_inputs = []
     train_actions = []
-    epsilon = 0.0
-    for i_episode in range(10):
+    epsilon = 0.2
+    for i_episode in range(30):
         expert = ExpertCartPole()
         state = env.reset()
         for t in range(100):
@@ -86,12 +91,16 @@ if __name__ == "__main__":
                 img = env.render(mode="rgb_array")
                 img_transform = tf.Compose([tf.ToTensor(), tf.Resize((64, 64))])
                 img = img_transform(img.astype(np.float32) / 255.0)
-                train_inputs.append(img)
+                if t >= MODEL_INPUT_FRAMES - 1:
+                    stack_img = torch.cat([prev_img, img], dim=0)
+                    train_inputs.append(stack_img)
+                prev_img = img.clone()
             else:
                 train_inputs.append(torch.tensor(state))
 
             action = expert.control(state)
-            train_actions.append(torch.tensor(action.astype(np.float32)))
+            if t >= MODEL_INPUT_FRAMES - 1:
+                train_actions.append(torch.tensor(action.astype(np.float32)))
 
             choice = np.random.uniform(0, 1)
             if choice < epsilon:
@@ -116,12 +125,12 @@ if __name__ == "__main__":
             c=train_actions + 0.25)
         plt.show()
     """ Train an imitation model based on the demonstration dataset """
-    novice.fit_model(train_inputs, train_actions)
+    novice.create_model(train_inputs, train_actions)
 
     # Use the adam optimizer
     optimizer = torch.optim.Adam(novice.controller.parameters(), lr=0.1)
 
-    losses = novice.train(
+    novice.train(
         100,
         optimizer,
         train_x=train_inputs.to('cuda'),
@@ -129,8 +138,10 @@ if __name__ == "__main__":
     """ Evaluation and visualization """
     novice.controller.eval()
     novice.likelihood.eval()
+    mean_duration = 0.0
+    num_trials = 10
     with torch.no_grad():
-        for i in range(10):
+        for i in range(num_trials):
             state = env.reset()
             gif = []
             for t in range(100):
@@ -141,20 +152,29 @@ if __name__ == "__main__":
                         [tf.ToTensor(), tf.Resize((64, 64))])
                     img = img_transform(img.astype(np.float32) /
                                         255.0).to('cuda')
+                    if t < MODEL_INPUT_FRAMES - 1:
+                        stack_img = torch.cat([img, img], dim=0)
+                    else:
+                        stack_img = torch.cat([prev_img, img], dim=0)
+
                     action, uncertainty = novice.control(
-                        img.clone().unsqueeze(0))
+                        stack_img.clone().unsqueeze(0))
+                    prev_img = img.clone()
                 else:
                     action, uncertainty = novice.control(
                         torch.tensor(state.reshape((1, -1))).to('cuda'))
 
+                # print(action.cpu().item(), uncertainty.cpu().item())
                 action = 0 if action < 0.5 else 1
                 state, reward, done, info = env.step(action)
 
                 if done:
-                    print("Episode finished after {} timesteps".format(t + 1))
                     break
+            print("Episode finished after {} timesteps".format(t + 1))
+            mean_duration += (t + 1)
             record_path = os.path.join(figures_path,
                                        'rollout' + str(i) + '.gif')
             imageio.mimwrite(record_path, gif)
 
+    print("avg test duration:", mean_duration / num_trials)
     env.close()
