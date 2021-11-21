@@ -3,6 +3,8 @@ import gym
 import imageio
 import os
 
+import torch
+
 from src.model.policy_base import BasePolicy
 
 
@@ -25,7 +27,8 @@ class ExpertCartPole(BasePolicy):
         self.integral = 0
         self.prev_error = 0
 
-    def control(self, observation: np.ndarray) -> np.ndarray:
+    def control(self, observation: torch.Tensor) -> torch.Tensor:
+        observation = observation.numpy()
         error = observation - self.desired_state
 
         self.integral += error
@@ -38,7 +41,10 @@ class ExpertCartPole(BasePolicy):
         action = sigmoid(pid)
         action = np.round(action).astype(np.int32)
 
-        return action
+        return torch.tensor(action)
+
+    def train(self):
+        pass
 
 
 if __name__ == "__main__":
@@ -54,13 +60,13 @@ if __name__ == "__main__":
         for t in range(50):
             img = env.render(mode="rgb_array")
             gif.append(img)
-            action = controller.control(state)
+            action = controller.control(torch.from_numpy(state))
 
             choice = np.random.uniform(0, 1)
             if choice < epsilon:
                 state, reward, done, info = env.step(env.action_space.sample())
             else:
-                state, reward, done, info = env.step(action)
+                state, reward, done, info = env.step(action.numpy())
 
             if done:
                 print("Episode finished after {} timesteps".format(t + 1))
