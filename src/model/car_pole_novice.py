@@ -42,7 +42,7 @@ class NoviceCartPole(BasePolicy):
                 likelihood=self.likelihood,
                 num_frames=self.num_frames)
 
-    def control(self, observation):
+    def control(self, observation: torch.Tensor) -> tuple:
         # reshape observation to (# of observation, -1)
         observation = observation.reshape((observation.shape[0], -1))
         out_distribution = self.controller(observation)
@@ -87,7 +87,7 @@ if __name__ == "__main__":
         expert = ExpertCartPole()
         state = env.reset()
         for t in range(100):
-            action = expert.control(state)
+            action = expert.control(torch.from_numpy(state)).numpy()
             if not use_gt_states:
                 img = env.render(mode="rgb_array")
                 img_transform = tf.Compose([tf.ToTensor(), tf.Resize((64, 64))])
