@@ -43,6 +43,10 @@ class ExpertCartPole(BasePolicy):
 
         return torch.tensor(action)
 
+    def reset(self) -> None:
+        self.integral = 0
+        self.prev_error = 0
+
     def train(self):
         pass
 
