@@ -43,12 +43,15 @@ class NoviceCartPole(BasePolicy):
                 num_frames=self.num_frames)
 
     def control(self, observation: torch.Tensor) -> tuple:
-        # reshape observation to (# of observation, -1)
-        observation = observation.reshape((observation.shape[0], -1))
-        out_distribution = self.controller(observation)
+        self.controller.eval()
+        self.likelihood.eval()
+        with torch.no_grad():
+            # reshape observation to (# of observation, -1)
+            observation = observation.reshape((observation.shape[0], -1))
+            out_distribution = self.controller(observation)
         return out_distribution.mean, out_distribution.variance
 
-    def train(self, iters, optimizer, train_x, train_y) -> None:
+    def train(self, iters, optimizer, train_x, train_y) -> float:
         # Find optimal model hyperparameters
         self.controller.train()
         self.likelihood.train()
@@ -57,7 +60,7 @@ class NoviceCartPole(BasePolicy):
         mll = gpytorch.mlls.ExactMarginalLogLikelihood(self.likelihood,
                                                        self.controller)
 
-        iterator = tqdm(range(iters))
+        iterator = range(iters)
         for i in iterator:
             # Zero backprop gradients
             optimizer.zero_grad()
@@ -67,8 +70,9 @@ class NoviceCartPole(BasePolicy):
             # Calc loss and backprop derivatives
             loss = -mll(output, train_y)
             loss.backward()
-            iterator.set_postfix(loss=loss.item())
+            # iterator.set_postfix(loss=loss.item())
             optimizer.step()
+        return loss.detach().cpu().item()
 
 
 if __name__ == "__main__":
@@ -83,7 +87,7 @@ if __name__ == "__main__":
     train_inputs = []
     train_actions = []
     epsilon = 0.2
-    for i_episode in range(30):
+    for i_episode in range(10):
         expert = ExpertCartPole()
         state = env.reset()
         for t in range(100):
@@ -136,8 +140,6 @@ if __name__ == "__main__":
         train_x=train_inputs.to('cuda'),
         train_y=train_actions.to('cuda'))
     """ Evaluation and visualization """
-    novice.controller.eval()
-    novice.likelihood.eval()
     mean_duration = 0.0
     num_trials = 10
     with torch.no_grad():
