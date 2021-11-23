@@ -1,5 +1,6 @@
 import numpy as np
 import torch
+from torch.utils.data import TensorDataset, DataLoader
 import gpytorch
 import gym
 import torchvision.transforms as tf
@@ -8,7 +9,8 @@ from matplotlib import pyplot as plt
 import imageio
 import os
 
-from src.model.visual_controller import GPController, VisualGPController
+from src.model.visual_controller import (GPController, VisualGPController,
+                                         VisVarGPCtrler)
 from src.experts.car_pole_expert import ExpertCartPole
 from src.model.policy_base import BasePolicy
 
@@ -18,17 +20,24 @@ MODEL_INPUT_FRAMES = 2  # only 2 frames are supported
 
 class NoviceCartPole(BasePolicy):
 
-    def __init__(self, num_frames=1, use_gt_states=False) -> None:
+    def __init__(self,
+                 num_frames=1,
+                 use_gt_states=False,
+                 use_variational_GP=True,
+                 device='cuda') -> None:
         self.controller = None
         self.use_gt_states = use_gt_states
         self.num_frames = num_frames
+        self.use_variational_GP = use_variational_GP
+        self.device = device
 
     def create_model(
         self,
         img_train: torch.Tensor,
         action_train: torch.Tensor,
     ) -> None:
-        self.likelihood = gpytorch.likelihoods.GaussianLikelihood()
+        self.likelihood = gpytorch.likelihoods.GaussianLikelihood().to(
+            self.device)
         if self.use_gt_states:
             self.controller = GPController(
                 train_x=img_train,
@@ -36,11 +45,21 @@ class NoviceCartPole(BasePolicy):
                 likelihood=self.likelihood)
         else:
             img_train = img_train.reshape((img_train.shape[0], -1))
-            self.controller = VisualGPController(
-                train_x=img_train,
-                train_y=action_train,
-                likelihood=self.likelihood,
-                num_frames=self.num_frames)
+            if self.use_variational_GP:
+                num_inducing = 256  # Can lower this if you want it to be faster
+                if img_train.shape[0] < num_inducing:
+                    print(
+                        "Warning: input training points < inducing points required!"
+                    )
+                inducing_points = img_train[:num_inducing, :]
+                self.controller = VisVarGPCtrler(
+                    inducing_points=inducing_points, num_frames=self.num_frames)
+            else:
+                self.controller = VisualGPController(
+                    train_x=img_train,
+                    train_y=action_train,
+                    likelihood=self.likelihood,
+                    num_frames=self.num_frames)
 
     def control(self, observation: torch.Tensor) -> tuple:
         self.controller.eval()
@@ -51,27 +70,58 @@ class NoviceCartPole(BasePolicy):
             out_distribution = self.controller(observation)
         return out_distribution.mean, out_distribution.variance
 
-    def train(self, iters, optimizer, train_x, train_y) -> float:
+    def train(self, iters, train_x, train_y) -> float:
         # Find optimal model hyperparameters
         self.controller.train()
         self.likelihood.train()
 
-        # "Loss" for GPs - the marginal log likelihood
-        mll = gpytorch.mlls.ExactMarginalLogLikelihood(self.likelihood,
-                                                       self.controller)
+        if self.use_variational_GP:
+            train_dataset = TensorDataset(
+                train_x.reshape(train_x.size(0), -1), train_y)
+            train_loader = DataLoader(
+                train_dataset, batch_size=64, shuffle=True)
 
-        iterator = range(iters)
-        for i in iterator:
-            # Zero backprop gradients
-            optimizer.zero_grad()
-            # Get output from model
-            train_x = train_x.reshape((train_x.shape[0], -1))
-            output = self.controller(train_x)
-            # Calc loss and backprop derivatives
-            loss = -mll(output, train_y)
-            loss.backward()
-            # iterator.set_postfix(loss=loss.item())
-            optimizer.step()
+            # TODO: why does Adam cause gradient explosion
+            optimizer = torch.optim.SGD([{
+                'params': self.controller.parameters()
+            }, {
+                'params': self.likelihood.parameters()
+            }],
+                                        lr=0.01)
+
+            mll = gpytorch.mlls.PredictiveLogLikelihood(
+                self.likelihood, self.controller, num_data=train_y.size(0))
+
+            iterator = range(iters)
+            for i in iterator:
+                for x_batch, y_batch in train_loader:
+                    x_batch = x_batch.cuda()
+                    y_batch = y_batch.cuda()
+                    optimizer.zero_grad()
+                    output = self.controller(x_batch)
+                    loss = -mll(output, y_batch)
+                    # print(loss.detach().cpu().item())
+                    loss.backward()
+                    optimizer.step()
+        else:
+            """ Using Exact GP """
+            # "Loss" for GPs - the marginal log likelihood
+            mll = gpytorch.mlls.ExactMarginalLogLikelihood(
+                self.likelihood, self.controller)
+            # Use the adam optimizer
+            optimizer = torch.optim.Adam(self.controller.parameters(), lr=0.1)
+
+            iterator = range(iters)
+            for i in iterator:
+                # Zero backprop gradients
+                optimizer.zero_grad()
+                # Get output from model
+                train_x = train_x.reshape((train_x.shape[0], -1))
+                output = self.controller(train_x)
+                # Calc loss and backprop derivatives
+                loss = -mll(output, train_y)
+                loss.backward()
+                optimizer.step()
         return loss.detach().cpu().item()
 
 
@@ -82,7 +132,9 @@ if __name__ == "__main__":
     env = gym.make('CartPole-v1')
     use_gt_states = False
     novice = NoviceCartPole(
-        num_frames=MODEL_INPUT_FRAMES, use_gt_states=use_gt_states)
+        num_frames=MODEL_INPUT_FRAMES,
+        use_gt_states=use_gt_states,
+        use_variational_GP=True)
     """ Collect demonstration dataset """
     train_inputs = []
     train_actions = []
@@ -131,14 +183,8 @@ if __name__ == "__main__":
     """ Train an imitation model based on the demonstration dataset """
     novice.create_model(train_inputs, train_actions)
 
-    # Use the adam optimizer
-    optimizer = torch.optim.Adam(novice.controller.parameters(), lr=0.1)
-
     novice.train(
-        100,
-        optimizer,
-        train_x=train_inputs.to('cuda'),
-        train_y=train_actions.to('cuda'))
+        100, train_x=train_inputs.to('cuda'), train_y=train_actions.to('cuda'))
     """ Evaluation and visualization """
     mean_duration = 0.0
     num_trials = 10
@@ -161,6 +207,8 @@ if __name__ == "__main__":
 
                     action, uncertainty = novice.control(
                         stack_img.clone().unsqueeze(0))
+                    print(action, uncertainty)
+
                     prev_img = img.clone()
                 else:
                     action, uncertainty = novice.control(

@@ -39,7 +39,7 @@ class DAgger():
         self.train_actions.append(act_t.cpu().float().detach().squeeze())
         self.train_obs.append(obs_t.cpu())
 
-    def update_novice(self, max_iters: int, optimizer_type: str) -> float:
+    def update_novice(self, max_iters: int) -> float:
         # TODO: investigate the cuda memory use of this function
         train_x = torch.stack(self.train_obs).to(self.device)
         train_y = torch.stack(self.train_actions).to(self.device)
@@ -47,13 +47,8 @@ class DAgger():
         if isinstance(self.pi_novice, NoviceCartPole):
             self.pi_novice.create_model(train_x, train_y)
 
-        if optimizer_type == "Adam":
-            optimizer = torch.optim.Adam(self.pi_novice.controller.parameters())
-        else:
-            raise NotImplementedError
-
         loss = self.pi_novice.train(
-            max_iters, optimizer, train_x=train_x, train_y=train_y)
+            max_iters, train_x=train_x, train_y=train_y)
 
         del train_x, train_y
 
@@ -113,7 +108,6 @@ if __name__ == "__main__":
     expert = ExpertCartPole()
 
     dagger = VanillaDAgger(pi_expert=expert, pi_novice=novice)
-    optimizer_type = "Adam"
 
     num_episodes = 10
     timesteps_per_episode = 100
@@ -151,7 +145,7 @@ if __name__ == "__main__":
             prev_img = img.clone()
 
             if t % int(timesteps_per_episode / 3) == 0:
-                loss = dagger.update_novice(100, optimizer_type)
+                loss = dagger.update_novice(100)
                 iterator.set_postfix(loss=loss)
 
             action = 0 if action < 0.5 else 1
