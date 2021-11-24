@@ -16,6 +16,7 @@ from src.model.policy_base import BasePolicy
 
 VISUALIZE_EXPERT_DATA = False
 MODEL_INPUT_FRAMES = 2  # only 2 frames are supported
+UNCERTAINTY_ANALYSIS = True
 
 
 class NoviceCartPole(BasePolicy):
@@ -23,7 +24,7 @@ class NoviceCartPole(BasePolicy):
     def __init__(self,
                  num_frames=1,
                  use_gt_states=False,
-                 use_variational_GP=True,
+                 use_variational_GP=False,
                  device='cuda') -> None:
         self.controller = None
         self.use_gt_states = use_gt_states
@@ -100,7 +101,7 @@ class NoviceCartPole(BasePolicy):
                     optimizer.zero_grad()
                     output = self.controller(x_batch)
                     loss = -mll(output, y_batch)
-                    # print(loss.detach().cpu().item())
+                    print(loss.detach().cpu().item())
                     loss.backward()
                     optimizer.step()
         else:
@@ -134,7 +135,7 @@ if __name__ == "__main__":
     novice = NoviceCartPole(
         num_frames=MODEL_INPUT_FRAMES,
         use_gt_states=use_gt_states,
-        use_variational_GP=True)
+        use_variational_GP=False)
     """ Collect demonstration dataset """
     train_inputs = []
     train_actions = []
@@ -188,11 +189,19 @@ if __name__ == "__main__":
     """ Evaluation and visualization """
     mean_duration = 0.0
     num_trials = 10
+
+    all_novice_actions = []
+    all_novice_uncertainties = []
+    all_expert_actions = []
     with torch.no_grad():
         for i in range(num_trials):
+            expert = ExpertCartPole()
             state = env.reset()
             gif = []
             for t in range(100):
+                expert_action = expert.control(torch.from_numpy(state)).numpy()
+                all_expert_actions.append(expert_action.item())
+
                 img = env.render(mode="rgb_array")
                 gif.append(img)
                 if not use_gt_states:
@@ -207,7 +216,10 @@ if __name__ == "__main__":
 
                     action, uncertainty = novice.control(
                         stack_img.clone().unsqueeze(0))
-                    print(action, uncertainty)
+                    # print(action, uncertainty)
+                    all_novice_actions.append(action.detach().cpu().item())
+                    all_novice_uncertainties.append(
+                        uncertainty.detach().cpu().item())
 
                     prev_img = img.clone()
                 else:
@@ -228,3 +240,29 @@ if __name__ == "__main__":
 
     print("avg test duration:", mean_duration / num_trials)
     env.close()
+
+    all_novice_actions = np.array(all_novice_actions)
+    all_novice_uncertainties = np.array(all_novice_uncertainties)
+    all_expert_actions = np.array(all_expert_actions)
+    if UNCERTAINTY_ANALYSIS:
+        plt.figure()
+        plt.scatter(all_novice_actions, all_novice_uncertainties)
+        plt.xlabel("novice action")
+        plt.ylabel("novice uncertainty")
+        plt.show()
+
+        novice_binary_actions = (all_novice_actions > 0.5).astype(np.int32)
+        correct_actions = novice_binary_actions == all_expert_actions.astype(
+            np.int32)
+        plt.figure()
+        plt.scatter(all_novice_uncertainties, correct_actions)
+        plt.xlabel("novice uncertainty")
+        plt.ylabel("is novice action correct")
+        plt.show()
+
+        plt.figure()
+        plt.scatter(all_novice_uncertainties,
+                    np.abs(all_novice_actions - all_expert_actions))
+        plt.xlabel("novice uncertainty")
+        plt.ylabel("action error")
+        plt.show()
