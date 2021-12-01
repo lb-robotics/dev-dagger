@@ -69,7 +69,10 @@ class NoviceCartPole(BasePolicy):
             # reshape observation to (# of observation, -1)
             observation = observation.reshape((observation.shape[0], -1))
             out_distribution = self.controller(observation)
-        return out_distribution.mean, out_distribution.variance
+            out_pred = self.likelihood(out_distribution)
+            confidence_lower, confidence_upper = out_pred.confidence_region()
+        return out_distribution.mean, (confidence_upper -
+                                       confidence_lower) / 2.0
 
     def train(self, iters, train_x, train_y) -> float:
         # Find optimal model hyperparameters
@@ -249,6 +252,7 @@ if __name__ == "__main__":
         plt.scatter(all_novice_actions, all_novice_uncertainties)
         plt.xlabel("novice action")
         plt.ylabel("novice uncertainty")
+        plt.savefig("img/novice_action_uncertainty.png", dpi=300)
         plt.show()
 
         novice_binary_actions = (all_novice_actions > 0.5).astype(np.int32)
@@ -265,4 +269,5 @@ if __name__ == "__main__":
                     np.abs(all_novice_actions - all_expert_actions))
         plt.xlabel("novice uncertainty")
         plt.ylabel("action error")
+        plt.savefig("img/error_vs_uncertainty.png", dpi=300)
         plt.show()

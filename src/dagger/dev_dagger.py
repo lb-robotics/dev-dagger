@@ -1,9 +1,10 @@
 from abc import abstractmethod
+from gpytorch.means import mean
 import numpy as np
 import torch
-from torch.nn.modules.module import _IncompatibleKeys
 from tqdm import tqdm
 import torchvision.transforms as tf
+import heapq
 
 from src.model.policy_base import BasePolicy
 from src.model.car_pole_novice import NoviceCartPole
@@ -23,6 +24,7 @@ class DAgger():
         self.device = device
         self.train_obs = []
         self.train_actions = []
+        self.expert_query_count = 0
 
     def rollout_expert(self, obs_t: torch.Tensor) -> torch.Tensor:
         return self.pi_expert.control(obs_t)
@@ -47,8 +49,7 @@ class DAgger():
         if isinstance(self.pi_novice, NoviceCartPole):
             self.pi_novice.create_model(train_x, train_y)
 
-        loss = self.pi_novice.train(
-            max_iters, train_x=train_x, train_y=train_y)
+        loss = self.pi_novice.train(max_iters, train_x=train_x, train_y=train_y)
 
         del train_x, train_y
 
@@ -84,13 +85,54 @@ class VanillaDAgger(DAgger):
             act_t = action_novice
 
         self.epsilon *= self.discount_factor
+        self.expert_query_count += 1
         return act_t.cpu()
 
 
 class DevDAgger(DAgger):
 
-    def __init__(self, pi_expert, pi_novice) -> None:
+    def __init__(self,
+                 pi_expert,
+                 pi_novice,
+                 uncertainty_thres,
+                 initial_steps: int = 300) -> None:
         super().__init__(pi_expert, pi_novice)
+        self.uncertainty_thres = uncertainty_thres
+        self.initial_steps = initial_steps
+        self.step_count = 0
+        self.expert_query_count = initial_steps
+
+        self.history_uncertainties = []
+        self.max_history_length = 20
+        self.top_n_uncertainties = None
+
+    def decision_rule(self, obs_t_novice: torch.Tensor,
+                      obs_t_expert: torch.Tensor) -> torch.Tensor:
+        if self.step_count < self.initial_steps:
+            action_expert = self.rollout_expert(obs_t_expert)
+            self.step_count += 1
+            return action_expert.cpu()
+
+        self.step_count += 1
+
+        action_novice, uncertainty_novice = self.rollout_novice(
+            obs_t_novice.unsqueeze(0).to(self.device))
+        action_novice = action_novice.squeeze()
+        uncertainty_novice = uncertainty_novice.squeeze()
+
+        if len(self.history_uncertainties) < self.max_history_length:
+            self.history_uncertainties.append(uncertainty_novice)
+            self.top_n_uncertainties = torch.stack(
+                heapq.nlargest(
+                    int(self.max_history_length * self.uncertainty_thres),
+                    self.history_uncertainties))[-1]
+
+        if uncertainty_novice > self.top_n_uncertainties:
+            action_expert = self.rollout_expert(obs_t_expert)
+            self.expert_query_count += 1
+            return action_expert.cpu()
+        else:
+            return action_novice.cpu()
 
 
 if __name__ == "__main__":
@@ -107,16 +149,20 @@ if __name__ == "__main__":
     novice = NoviceCartPole(num_frames=2, use_gt_states=use_gt_states)
     expert = ExpertCartPole()
 
-    dagger = VanillaDAgger(pi_expert=expert, pi_novice=novice)
+    # dagger = VanillaDAgger(pi_expert=expert, pi_novice=novice)
+    dagger = DevDAgger(
+        pi_expert=expert, pi_novice=novice, uncertainty_thres=1.0)
 
     num_episodes = 10
     timesteps_per_episode = 100
+    total_samples = 0
     for episode in range(num_episodes):
         state = env.reset()
         dagger.reset_expert()
 
         iterator = tqdm(range(timesteps_per_episode))
         for t in iterator:
+            total_samples += 1
             if not use_gt_states:
                 img = env.render(mode="rgb_array")
                 img_transform = tf.Compose([tf.ToTensor(), tf.Resize((64, 64))])
@@ -153,6 +199,9 @@ if __name__ == "__main__":
             state, reward, done, info = env.step(action)
             if done:
                 break
+
+    print("Total expert query ratio:",
+          dagger.expert_query_count / total_samples)
     """ Evaluation and visualization """
     mean_duration = 0.0
     num_trials = 10
