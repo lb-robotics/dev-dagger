@@ -129,21 +129,12 @@ class NoviceCartPole(BasePolicy):
         return loss.detach().cpu().item()
 
 
-if __name__ == "__main__":
-    figures_path = os.path.join("img", "cart_pole_visual_novice")
-    os.makedirs(figures_path, exist_ok=True)
-
-    env = gym.make('CartPole-v1')
-    use_gt_states = False
-    novice = NoviceCartPole(
-        num_frames=MODEL_INPUT_FRAMES,
-        use_gt_states=use_gt_states,
-        use_variational_GP=False)
+def data_collection(env: gym.Env, num_episodes: int = 10):
     """ Collect demonstration dataset """
     train_inputs = []
     train_actions = []
     epsilon = 0.2
-    for i_episode in range(10):
+    for i_episode in range(num_episodes):
         expert = ExpertCartPole()
         state = env.reset()
         for t in range(100):
@@ -174,25 +165,17 @@ if __name__ == "__main__":
 
     train_inputs = torch.stack(train_inputs)
     train_actions = torch.stack(train_actions)
+    return train_inputs, train_actions
 
-    if VISUALIZE_EXPERT_DATA:
-        fig = plt.figure()
-        ax = plt.axes(projection='3d')
-        ax.scatter3D(
-            train_inputs[:, 2],
-            train_inputs[:, 3],
-            train_actions,
-            c=train_actions + 0.25)
-        plt.show()
-    """ Train an imitation model based on the demonstration dataset """
-    novice.create_model(train_inputs, train_actions)
 
-    novice.train(
-        100, train_x=train_inputs.to('cuda'), train_y=train_actions.to('cuda'))
+def test(env: gym.Env,
+         novice: BasePolicy,
+         figures_path: str,
+         num_trials: int = 10):
     """ Evaluation and visualization """
-    mean_duration = 0.0
-    num_trials = 10
+    img_transform = tf.Compose([tf.ToTensor(), tf.Resize((64, 64))])
 
+    mean_duration = 0.0
     all_novice_actions = []
     all_novice_uncertainties = []
     all_expert_actions = []
@@ -208,8 +191,6 @@ if __name__ == "__main__":
                 img = env.render(mode="rgb_array")
                 gif.append(img)
                 if not use_gt_states:
-                    img_transform = tf.Compose(
-                        [tf.ToTensor(), tf.Resize((64, 64))])
                     img = img_transform(img.astype(np.float32) /
                                         255.0).to('cuda')
                     if t < MODEL_INPUT_FRAMES - 1:
@@ -241,33 +222,86 @@ if __name__ == "__main__":
                                        'rollout' + str(i) + '.gif')
             imageio.mimwrite(record_path, gif)
 
-    print("avg test duration:", mean_duration / num_trials)
-    env.close()
+    avg_test_duration = mean_duration / num_trials
+    print("avg test duration:", avg_test_duration)
 
-    all_novice_actions = np.array(all_novice_actions)
-    all_novice_uncertainties = np.array(all_novice_uncertainties)
-    all_expert_actions = np.array(all_expert_actions)
-    if UNCERTAINTY_ANALYSIS:
-        plt.figure()
-        plt.scatter(all_novice_actions, all_novice_uncertainties)
-        plt.xlabel("novice action")
-        plt.ylabel("novice uncertainty")
-        plt.savefig("img/novice_action_uncertainty.png", dpi=300)
-        plt.show()
+    return avg_test_duration, all_novice_actions, all_novice_uncertainties, all_expert_actions
 
-        novice_binary_actions = (all_novice_actions > 0.5).astype(np.int32)
-        correct_actions = novice_binary_actions == all_expert_actions.astype(
-            np.int32)
-        plt.figure()
-        plt.scatter(all_novice_uncertainties, correct_actions)
-        plt.xlabel("novice uncertainty")
-        plt.ylabel("is novice action correct")
-        plt.show()
 
-        plt.figure()
-        plt.scatter(all_novice_uncertainties,
-                    np.abs(all_novice_actions - all_expert_actions))
-        plt.xlabel("novice uncertainty")
-        plt.ylabel("action error")
-        plt.savefig("img/error_vs_uncertainty.png", dpi=300)
-        plt.show()
+if __name__ == "__main__":
+    figures_path = os.path.join("img", "cart_pole_visual_novice")
+    os.makedirs(figures_path, exist_ok=True)
+
+    num_experiments = 10
+
+    list_avg_test_durations = []
+
+    for experiment_id in range(num_experiments):
+        print("----- Experiment {} -----".format(experiment_id))
+
+        env = gym.make('CartPole-v1')
+        use_gt_states = False
+        novice = NoviceCartPole(
+            num_frames=MODEL_INPUT_FRAMES,
+            use_gt_states=use_gt_states,
+            use_variational_GP=False)
+
+        train_inputs, train_actions = data_collection(env)
+
+        if VISUALIZE_EXPERT_DATA:
+            fig = plt.figure()
+            ax = plt.axes(projection='3d')
+            ax.scatter3D(
+                train_inputs[:, 2],
+                train_inputs[:, 3],
+                train_actions,
+                c=train_actions + 0.25)
+            plt.show()
+        """ Train an imitation model based on the demonstration dataset """
+        novice.create_model(train_inputs, train_actions)
+
+        novice.train(
+            100,
+            train_x=train_inputs.to('cuda'),
+            train_y=train_actions.to('cuda'))
+        """ Evaluation and visualization """
+        avg_test_duration, all_novice_actions, all_novice_uncertainties, all_expert_actions = test(
+            env, novice, figures_path, num_trials=10)
+        list_avg_test_durations.append(avg_test_duration)
+
+        env.close()
+
+        all_novice_actions = np.array(all_novice_actions)
+        all_novice_uncertainties = np.array(all_novice_uncertainties)
+        all_expert_actions = np.array(all_expert_actions)
+        if UNCERTAINTY_ANALYSIS:
+            plt.figure()
+            plt.scatter(all_novice_actions, all_novice_uncertainties)
+            plt.xlabel("novice action")
+            plt.ylabel("novice uncertainty")
+            plt.savefig(
+                "img/novice_action_uncertainty_{}.png".format(experiment_id),
+                dpi=300)
+            # plt.show()
+
+            # novice_binary_actions = (all_novice_actions > 0.5).astype(np.int32)
+            # correct_actions = novice_binary_actions == all_expert_actions.astype(
+            #     np.int32)
+            # plt.figure()
+            # plt.scatter(all_novice_uncertainties, correct_actions)
+            # plt.xlabel("novice uncertainty")
+            # plt.ylabel("is novice action correct")
+            # # plt.show()
+
+            plt.figure()
+            plt.scatter(all_novice_uncertainties,
+                        np.abs(all_novice_actions - all_expert_actions))
+            plt.xlabel("novice uncertainty")
+            plt.ylabel("action error")
+            plt.savefig(
+                "img/error_vs_uncertainty_{}.png".format(experiment_id),
+                dpi=300)
+            # plt.show()
+
+    print("Average test duration for {} iterations: {}".format(
+        num_experiments, np.mean(list_avg_test_durations)))
