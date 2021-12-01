@@ -14,9 +14,13 @@ from src.model.visual_controller import (GPController, VisualGPController,
 from src.experts.car_pole_expert import ExpertCartPole
 from src.model.policy_base import BasePolicy
 
-VISUALIZE_EXPERT_DATA = False
+VISUALIZE_EXPERT_DATA = True
+VISUALIZE_NOVICE_UNCERTAINTIES = True
 MODEL_INPUT_FRAMES = 2  # only 2 frames are supported
 UNCERTAINTY_ANALYSIS = True
+
+theta_scaling_factor = 100
+theta_dot_scaling_factor = 10
 
 
 class NoviceCartPole(BasePolicy):
@@ -129,11 +133,13 @@ class NoviceCartPole(BasePolicy):
         return loss.detach().cpu().item()
 
 
-def data_collection(env: gym.Env, num_episodes: int = 10):
+def data_collection(env: gym.Env,
+                    num_episodes: int = 10,
+                    epsilon: float = 0.2,
+                    use_gt_states: bool = False):
     """ Collect demonstration dataset """
     train_inputs = []
     train_actions = []
-    epsilon = 0.2
     for i_episode in range(num_episodes):
         expert = ExpertCartPole()
         state = env.reset()
@@ -171,7 +177,8 @@ def data_collection(env: gym.Env, num_episodes: int = 10):
 def test(env: gym.Env,
          novice: BasePolicy,
          figures_path: str,
-         num_trials: int = 10):
+         num_trials: int = 10,
+         use_gt_states: bool = False):
     """ Evaluation and visualization """
     img_transform = tf.Compose([tf.ToTensor(), tf.Resize((64, 64))])
 
@@ -179,6 +186,7 @@ def test(env: gym.Env,
     all_novice_actions = []
     all_novice_uncertainties = []
     all_expert_actions = []
+    all_states = []
     with torch.no_grad():
         for i in range(num_trials):
             expert = ExpertCartPole()
@@ -201,14 +209,19 @@ def test(env: gym.Env,
                     action, uncertainty = novice.control(
                         stack_img.clone().unsqueeze(0))
                     # print(action, uncertainty)
-                    all_novice_actions.append(action.detach().cpu().item())
-                    all_novice_uncertainties.append(
-                        uncertainty.detach().cpu().item())
 
                     prev_img = img.clone()
                 else:
-                    action, uncertainty = novice.control(
-                        torch.tensor(state.reshape((1, -1))).to('cuda'))
+                    scaled_state = torch.tensor(state.reshape(
+                        (1, -1))).to('cuda')
+                    scaled_state[:, 2] *= theta_scaling_factor
+                    scaled_state[:, 3] *= theta_dot_scaling_factor
+                    action, uncertainty = novice.control(scaled_state)
+
+                all_novice_actions.append(action.detach().cpu().item())
+                all_novice_uncertainties.append(
+                    uncertainty.detach().cpu().item())
+                all_states.append(state)
 
                 # print(action.cpu().item(), uncertainty.cpu().item())
                 action = 0 if action < 0.5 else 1
@@ -225,39 +238,48 @@ def test(env: gym.Env,
     avg_test_duration = mean_duration / num_trials
     print("avg test duration:", avg_test_duration)
 
-    return avg_test_duration, all_novice_actions, all_novice_uncertainties, all_expert_actions
+    return avg_test_duration, all_novice_actions, all_novice_uncertainties, all_expert_actions, all_states
 
 
 if __name__ == "__main__":
     figures_path = os.path.join("img", "cart_pole_visual_novice")
     os.makedirs(figures_path, exist_ok=True)
 
-    num_experiments = 10
+    num_experiments = 1
 
     list_avg_test_durations = []
+
+    list_train_inputs = []
+    list_train_actions = []
 
     for experiment_id in range(num_experiments):
         print("----- Experiment {} -----".format(experiment_id))
 
         env = gym.make('CartPole-v1')
-        use_gt_states = False
+        use_gt_states = True
         novice = NoviceCartPole(
             num_frames=MODEL_INPUT_FRAMES,
             use_gt_states=use_gt_states,
             use_variational_GP=False)
 
-        train_inputs, train_actions = data_collection(env)
+        train_inputs, train_actions = data_collection(
+            env, num_episodes=10, epsilon=0.2, use_gt_states=use_gt_states)
 
-        if VISUALIZE_EXPERT_DATA:
+        if VISUALIZE_EXPERT_DATA and use_gt_states:
             fig = plt.figure()
-            ax = plt.axes(projection='3d')
-            ax.scatter3D(
-                train_inputs[:, 2],
-                train_inputs[:, 3],
-                train_actions,
-                c=train_actions + 0.25)
+            ax = plt.axes()
+            sc = ax.scatter(
+                train_inputs[:, 2], train_inputs[:, 3], c=train_actions)
+            plt.colorbar(sc)
+            plt.title("Training Expert Actions vs. State")
+            plt.xlabel("theta")
+            plt.ylabel("theta_dot")
             plt.show()
         """ Train an imitation model based on the demonstration dataset """
+        if use_gt_states:
+            train_inputs[:, 2] *= theta_scaling_factor
+            train_inputs[:, 3] *= theta_dot_scaling_factor
+
         novice.create_model(train_inputs, train_actions)
 
         novice.train(
@@ -265,16 +287,48 @@ if __name__ == "__main__":
             train_x=train_inputs.to('cuda'),
             train_y=train_actions.to('cuda'))
         """ Evaluation and visualization """
-        avg_test_duration, all_novice_actions, all_novice_uncertainties, all_expert_actions = test(
-            env, novice, figures_path, num_trials=10)
+        avg_test_duration, all_novice_actions, all_novice_uncertainties, all_expert_actions, all_states = test(
+            env,
+            novice,
+            figures_path,
+            num_trials=10,
+            use_gt_states=use_gt_states)
         list_avg_test_durations.append(avg_test_duration)
-
-        env.close()
 
         all_novice_actions = np.array(all_novice_actions)
         all_novice_uncertainties = np.array(all_novice_uncertainties)
         all_expert_actions = np.array(all_expert_actions)
+        all_states = np.stack(all_states)
+
+        env.close()
+
         if UNCERTAINTY_ANALYSIS:
+            if VISUALIZE_NOVICE_UNCERTAINTIES and use_gt_states:
+                fig = plt.figure()
+                ax = plt.axes()
+                sc = ax.scatter(
+                    all_states[:, 2],
+                    all_states[:, 3],
+                    c=all_novice_uncertainties)
+                c_bar = plt.colorbar(sc)
+                plt.title("Novice Uncertainty vs. State")
+                plt.xlabel("theta")
+                plt.ylabel("theta_dot")
+                plt.show()
+
+                novice_actions_binary = (all_novice_actions >= 0.5)
+                action_error = np.abs(novice_actions_binary -
+                                      all_expert_actions)
+                fig = plt.figure()
+                ax = plt.axes()
+                sc = ax.scatter(
+                    all_states[:, 2], all_states[:, 3], c=action_error)
+                c_bar = plt.colorbar(sc)
+                plt.title("Novice Action Error vs. State")
+                plt.xlabel("theta")
+                plt.ylabel("theta_dot")
+                plt.show()
+
             plt.figure()
             plt.scatter(all_novice_actions, all_novice_uncertainties)
             plt.xlabel("novice action")
