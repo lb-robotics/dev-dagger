@@ -41,7 +41,7 @@ class ExpertCartPole(BasePolicy):
         action = sigmoid(pid)
         action = np.round(action).astype(np.int32)
 
-        return torch.tensor(action)
+        return torch.tensor(action), torch.tensor(pid)
 
     def reset(self) -> None:
         self.integral = 0

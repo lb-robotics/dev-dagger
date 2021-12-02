@@ -43,6 +43,8 @@ class NoviceCartPole(BasePolicy):
     ) -> None:
         self.likelihood = gpytorch.likelihoods.GaussianLikelihood().to(
             self.device)
+        # self.likelihood = gpytorch.likelihoods.BernoulliLikelihood().to(
+        #     self.device)
         if self.use_gt_states:
             self.controller = GPController(
                 train_x=img_train,
@@ -73,10 +75,12 @@ class NoviceCartPole(BasePolicy):
             # reshape observation to (# of observation, -1)
             observation = observation.reshape((observation.shape[0], -1))
             out_distribution = self.controller(observation)
-            out_pred = self.likelihood(out_distribution)
+            out_pred = self.likelihood(
+                out_distribution)  # this is a ber distribution now
             confidence_lower, confidence_upper = out_pred.confidence_region()
         return out_distribution.mean, (confidence_upper -
                                        confidence_lower) / 2.0
+        # return out_pred.probs  # the prob of this point being 1
 
     def train(self, iters, train_x, train_y) -> float:
         # Find optimal model hyperparameters
@@ -144,7 +148,9 @@ def data_collection(env: gym.Env,
         expert = ExpertCartPole()
         state = env.reset()
         for t in range(100):
-            action = expert.control(torch.from_numpy(state)).numpy()
+            action, pid = expert.control(torch.from_numpy(state))
+            action = action.numpy()
+            pid = pid.numpy()
             if not use_gt_states:
                 img = env.render(mode="rgb_array")
                 img_transform = tf.Compose([tf.ToTensor(), tf.Resize((64, 64))])
@@ -157,7 +163,8 @@ def data_collection(env: gym.Env,
                 prev_img = img.clone()
             else:
                 train_inputs.append(torch.tensor(state))
-                train_actions.append(torch.tensor(action.astype(np.float32)))
+                # train_actions.append(torch.tensor(action.astype(np.float32)))
+                train_actions.append(torch.tensor(pid.astype(np.float32)))
 
             choice = np.random.uniform(0, 1)
             if choice < epsilon:
@@ -178,7 +185,9 @@ def test(env: gym.Env,
          novice: BasePolicy,
          figures_path: str,
          num_trials: int = 10,
-         use_gt_states: bool = False):
+         epsilon: float = 0,
+         use_gt_states: bool = False,
+         save_gif: bool = False):
     """ Evaluation and visualization """
     img_transform = tf.Compose([tf.ToTensor(), tf.Resize((64, 64))])
 
@@ -193,11 +202,17 @@ def test(env: gym.Env,
             state = env.reset()
             gif = []
             for t in range(100):
-                expert_action = expert.control(torch.from_numpy(state)).numpy()
-                all_expert_actions.append(expert_action.item())
+                expert_action, expert_pid = expert.control(
+                    torch.from_numpy(state))
+                expert_action = expert_action.numpy()
+                expert_pid = expert_pid.numpy()
 
-                img = env.render(mode="rgb_array")
-                gif.append(img)
+                all_expert_actions.append(expert_pid.item())
+
+                if save_gif or not use_gt_states:
+                    img = env.render(mode="rgb_array")
+                    gif.append(img)
+
                 if not use_gt_states:
                     img = img_transform(img.astype(np.float32) /
                                         255.0).to('cuda')
@@ -216,7 +231,7 @@ def test(env: gym.Env,
                         (1, -1))).to('cuda')
                     scaled_state[:, 2] *= theta_scaling_factor
                     scaled_state[:, 3] *= theta_dot_scaling_factor
-                    action, uncertainty = novice.control(scaled_state)
+                    action, uncertainty = novice.control(scaled_state[:, 2:])
 
                 all_novice_actions.append(action.detach().cpu().item())
                 all_novice_uncertainties.append(
@@ -224,16 +239,23 @@ def test(env: gym.Env,
                 all_states.append(state)
 
                 # print(action.cpu().item(), uncertainty.cpu().item())
-                action = 0 if action < 0.5 else 1
-                state, reward, done, info = env.step(action)
+                action = 0 if action < 0 else 1
+                choice = np.random.uniform(0, 1)
+                if choice < epsilon:
+                    state, reward, done, info = env.step(
+                        env.action_space.sample())
+                else:
+                    state, reward, done, info = env.step(action)
 
                 if done:
                     break
             print("Episode finished after {} timesteps".format(t + 1))
             mean_duration += (t + 1)
-            record_path = os.path.join(figures_path,
-                                       'rollout' + str(i) + '.gif')
-            imageio.mimwrite(record_path, gif)
+
+            if save_gif:
+                record_path = os.path.join(figures_path,
+                                           'rollout' + str(i) + '.gif')
+                imageio.mimwrite(record_path, gif)
 
     avg_test_duration = mean_duration / num_trials
     print("avg test duration:", avg_test_duration)
@@ -274,24 +296,32 @@ if __name__ == "__main__":
             plt.title("Training Expert Actions vs. State")
             plt.xlabel("theta")
             plt.ylabel("theta_dot")
-            plt.show()
-        """ Train an imitation model based on the demonstration dataset """
+            plt.savefig("img/expert_data_{}.png".format(experiment_id), dpi=300)
+            # plt.show()
+
+        #######################################
+        ### Train an imitation model based on the demonstration dataset
+        #######################################
         if use_gt_states:
             train_inputs[:, 2] *= theta_scaling_factor
             train_inputs[:, 3] *= theta_dot_scaling_factor
 
-        novice.create_model(train_inputs, train_actions)
+        novice.create_model(train_inputs[:, 2:], train_actions)
 
         novice.train(
             100,
-            train_x=train_inputs.to('cuda'),
+            train_x=train_inputs[:, 2:].to('cuda'),
             train_y=train_actions.to('cuda'))
-        """ Evaluation and visualization """
+
+        #######################################
+        ### Evaluation and visualization
+        #######################################
         avg_test_duration, all_novice_actions, all_novice_uncertainties, all_expert_actions, all_states = test(
             env,
             novice,
             figures_path,
             num_trials=10,
+            epsilon=0.2,
             use_gt_states=use_gt_states)
         list_avg_test_durations.append(avg_test_duration)
 
@@ -314,7 +344,10 @@ if __name__ == "__main__":
                 plt.title("Novice Uncertainty vs. State")
                 plt.xlabel("theta")
                 plt.ylabel("theta_dot")
-                plt.show()
+                plt.savefig(
+                    "img/novice_uncertainty_{}.png".format(experiment_id),
+                    dpi=300)
+                # plt.show()
 
                 novice_actions_binary = (all_novice_actions >= 0.5)
                 action_error = np.abs(novice_actions_binary -
@@ -327,7 +360,9 @@ if __name__ == "__main__":
                 plt.title("Novice Action Error vs. State")
                 plt.xlabel("theta")
                 plt.ylabel("theta_dot")
-                plt.show()
+                plt.savefig(
+                    "img/novice_error_{}.png".format(experiment_id), dpi=300)
+                # plt.show()
 
             plt.figure()
             plt.scatter(all_novice_actions, all_novice_uncertainties)
