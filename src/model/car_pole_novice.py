@@ -78,8 +78,9 @@ class NoviceCartPole(BasePolicy):
             out_pred = self.likelihood(
                 out_distribution)  # this is a ber distribution now
             confidence_lower, confidence_upper = out_pred.confidence_region()
-        return out_distribution.mean, (confidence_upper -
-                                       confidence_lower) / 2.0
+        # return out_distribution.mean, (confidence_upper -
+        #                                confidence_lower) / 4.0
+        return out_pred.mean, out_pred.stddev  # should be equivalent to above
         # return out_pred.probs  # the prob of this point being 1
 
     def train(self, iters, train_x, train_y) -> float:
@@ -148,9 +149,9 @@ def data_collection(env: gym.Env,
         expert = ExpertCartPole()
         state = env.reset()
         for t in range(100):
-            action, pid = expert.control(torch.from_numpy(state))
-            action = action.numpy()
+            pid = expert.control(torch.from_numpy(state))
             pid = pid.numpy()
+            action = 0 if pid < 0 else 1
             if not use_gt_states:
                 img = env.render(mode="rgb_array")
                 img_transform = tf.Compose([tf.ToTensor(), tf.Resize((64, 64))])
@@ -202,9 +203,7 @@ def test(env: gym.Env,
             state = env.reset()
             gif = []
             for t in range(100):
-                expert_action, expert_pid = expert.control(
-                    torch.from_numpy(state))
-                expert_action = expert_action.numpy()
+                expert_pid = expert.control(torch.from_numpy(state))
                 expert_pid = expert_pid.numpy()
 
                 all_expert_actions.append(expert_pid.item())
@@ -285,7 +284,7 @@ if __name__ == "__main__":
             use_variational_GP=False)
 
         train_inputs, train_actions = data_collection(
-            env, num_episodes=10, epsilon=0.2, use_gt_states=use_gt_states)
+            env, num_episodes=10, epsilon=0., use_gt_states=use_gt_states)
 
         if VISUALIZE_EXPERT_DATA and use_gt_states:
             fig = plt.figure()
