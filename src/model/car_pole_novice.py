@@ -262,6 +262,29 @@ def test(env: gym.Env,
     return avg_test_duration, all_novice_actions, all_novice_uncertainties, all_expert_actions, all_states
 
 
+def grid_uncertainty_visual(novice: BasePolicy,):
+    all_novice_actions = []
+    all_novice_uncertainties = []
+    all_states = []
+    with torch.no_grad():
+        for theta in np.arange(-1, 1, 0.1):
+            for theta_dot in np.arange(-2, 2, 0.2):
+                state = np.array([theta, theta_dot])
+
+                scaled_state = torch.tensor(
+                    state.astype(np.float32).reshape((1, -1))).to('cuda')
+                scaled_state[:, 0] *= theta_scaling_factor
+                scaled_state[:, 1] *= theta_dot_scaling_factor
+                action, uncertainty = novice.control(scaled_state)
+
+                all_novice_actions.append(action.detach().cpu().item())
+                all_novice_uncertainties.append(
+                    uncertainty.detach().cpu().item())
+                all_states.append(state)
+
+    return all_novice_actions, all_novice_uncertainties, all_states
+
+
 if __name__ == "__main__":
     figures_path = os.path.join("img", "cart_pole_visual_novice")
     os.makedirs(figures_path, exist_ok=True)
@@ -372,15 +395,6 @@ if __name__ == "__main__":
                 dpi=300)
             # plt.show()
 
-            # novice_binary_actions = (all_novice_actions > 0.5).astype(np.int32)
-            # correct_actions = novice_binary_actions == all_expert_actions.astype(
-            #     np.int32)
-            # plt.figure()
-            # plt.scatter(all_novice_uncertainties, correct_actions)
-            # plt.xlabel("novice uncertainty")
-            # plt.ylabel("is novice action correct")
-            # # plt.show()
-
             plt.figure()
             plt.scatter(all_novice_uncertainties,
                         np.abs(all_novice_actions - all_expert_actions))
@@ -390,6 +404,29 @@ if __name__ == "__main__":
                 "img/error_vs_uncertainty_{}.png".format(experiment_id),
                 dpi=300)
             # plt.show()
+
+            grid_novice_actions, grid_novice_uncertainties, grid_states = grid_uncertainty_visual(
+                novice)
+
+            grid_novice_actions = np.array(grid_novice_actions)
+            grid_novice_uncertainties = np.array(grid_novice_uncertainties)
+            grid_states = np.stack(grid_states)
+            fig = plt.figure()
+            ax = plt.axes()
+            sc = ax.scatter(
+                grid_states[:, 0],
+                grid_states[:, 1],
+                c=grid_novice_uncertainties)
+            c_bar = plt.colorbar(sc)
+            plt.title(
+                "Grid Novice Uncertainty vs. State\n upper bound: {}".format(
+                    (novice.controller.covar_module.outputscale +
+                     novice.likelihood.noise).sqrt().item()))
+            plt.xlabel("theta")
+            plt.ylabel("theta_dot")
+            plt.savefig(
+                "img/grid_novice_uncertainty_{}.png".format(experiment_id),
+                dpi=300)
 
     print("Average test duration for {} iterations: {}".format(
         num_experiments, np.mean(list_avg_test_durations)))
