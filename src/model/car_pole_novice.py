@@ -83,7 +83,7 @@ class NoviceCartPole(BasePolicy):
         return out_pred.mean, out_pred.stddev  # should be equivalent to above
         # return out_pred.probs  # the prob of this point being 1
 
-    def train(self, iters, train_x, train_y) -> float:
+    def train(self, iters, train_x, train_y, use_tqdm: bool) -> float:
         # Find optimal model hyperparameters
         self.controller.train()
         self.likelihood.train()
@@ -105,7 +105,7 @@ class NoviceCartPole(BasePolicy):
             mll = gpytorch.mlls.PredictiveLogLikelihood(
                 self.likelihood, self.controller, num_data=train_y.size(0))
 
-            iterator = range(iters)
+            iterator = range(iters) if not use_tqdm else tqdm(range(iters))
             for i in iterator:
                 for x_batch, y_batch in train_loader:
                     x_batch = x_batch.cuda()
@@ -113,9 +113,10 @@ class NoviceCartPole(BasePolicy):
                     optimizer.zero_grad()
                     output = self.controller(x_batch)
                     loss = -mll(output, y_batch)
-                    print(loss.detach().cpu().item())
                     loss.backward()
                     optimizer.step()
+                    if use_tqdm:
+                        iterator.set_description(loss.detach().cpu().item())
         else:
             """ Using Exact GP """
             # "Loss" for GPs - the marginal log likelihood
@@ -124,7 +125,7 @@ class NoviceCartPole(BasePolicy):
             # Use the adam optimizer
             optimizer = torch.optim.Adam(self.controller.parameters(), lr=0.1)
 
-            iterator = range(iters)
+            iterator = range(iters) if not use_tqdm else tqdm(range(iters))
             for i in iterator:
                 # Zero backprop gradients
                 optimizer.zero_grad()
@@ -135,6 +136,8 @@ class NoviceCartPole(BasePolicy):
                 loss = -mll(output, train_y)
                 loss.backward()
                 optimizer.step()
+                if use_tqdm:
+                    iterator.set_description(loss.detach().cpu().item())
         return loss.detach().cpu().item()
 
 
@@ -145,6 +148,7 @@ def data_collection(env: gym.Env,
     """ Collect demonstration dataset """
     train_inputs = []
     train_actions = []
+    train_states = []
     for i_episode in range(num_episodes):
         expert = ExpertCartPole()
         state = env.reset()
@@ -159,13 +163,14 @@ def data_collection(env: gym.Env,
                 if t >= MODEL_INPUT_FRAMES - 1:
                     stack_img = torch.cat([prev_img, img], dim=0)
                     train_inputs.append(stack_img)
-                    train_actions.append(
-                        torch.tensor(action.astype(np.float32)))
+                    train_actions.append(torch.tensor(pid.astype(np.float32)))
+                    train_states.append(torch.tensor(state))
                 prev_img = img.clone()
             else:
                 train_inputs.append(torch.tensor(state))
                 # train_actions.append(torch.tensor(action.astype(np.float32)))
                 train_actions.append(torch.tensor(pid.astype(np.float32)))
+                train_states.append(torch.tensor(state))
 
             choice = np.random.uniform(0, 1)
             if choice < epsilon:
@@ -179,7 +184,8 @@ def data_collection(env: gym.Env,
 
     train_inputs = torch.stack(train_inputs)
     train_actions = torch.stack(train_actions)
-    return train_inputs, train_actions
+    train_states = torch.stack(train_states)
+    return train_inputs, train_actions, train_states
 
 
 def test_novice(env: gym.Env,
@@ -306,14 +312,14 @@ if __name__ == "__main__":
             use_gt_states=use_gt_states,
             use_variational_GP=False)
 
-        train_inputs, train_actions = data_collection(
-            env, num_episodes=2, epsilon=0, use_gt_states=use_gt_states)
+        train_inputs, train_actions, train_states = data_collection(
+            env, num_episodes=10, epsilon=0, use_gt_states=use_gt_states)
 
-        if VISUALIZE_EXPERT_DATA and use_gt_states:
+        if VISUALIZE_EXPERT_DATA:
             fig = plt.figure()
             ax = plt.axes()
             sc = ax.scatter(
-                train_inputs[:, 2], train_inputs[:, 3], c=train_actions)
+                train_states[:, 2], train_states[:, 3], c=train_actions)
             plt.colorbar(sc)
             plt.title("Training Expert Actions vs. State")
             plt.xlabel("theta")
@@ -327,13 +333,17 @@ if __name__ == "__main__":
         if use_gt_states:
             train_inputs[:, 2] *= theta_scaling_factor
             train_inputs[:, 3] *= theta_dot_scaling_factor
-
-        novice.create_model(train_inputs[:, 2:], train_actions)
-
-        novice.train(
-            100,
-            train_x=train_inputs[:, 2:].to('cuda'),
-            train_y=train_actions.to('cuda'))
+            novice.create_model(train_inputs[:, 2:], train_actions)
+            novice.train(
+                1000,
+                train_x=train_inputs[:, 2:].to('cuda'),
+                train_y=train_actions.to('cuda'))
+        else:
+            novice.create_model(train_inputs, train_actions)
+            novice.train(
+                1000,
+                train_x=train_inputs.to('cuda'),
+                train_y=train_actions.to('cuda'))
 
         #######################################
         ### Evaluation and visualization
@@ -355,7 +365,7 @@ if __name__ == "__main__":
         env.close()
 
         if UNCERTAINTY_ANALYSIS:
-            if VISUALIZE_NOVICE_UNCERTAINTIES and use_gt_states:
+            if VISUALIZE_NOVICE_UNCERTAINTIES:
                 fig = plt.figure()
                 ax = plt.axes()
                 sc = ax.scatter(
@@ -405,28 +415,28 @@ if __name__ == "__main__":
                 dpi=300)
             # plt.show()
 
-            grid_novice_actions, grid_novice_uncertainties, grid_states = grid_uncertainty_visual(
-                novice)
+            # grid_novice_actions, grid_novice_uncertainties, grid_states = grid_uncertainty_visual(
+            #     novice)
 
-            grid_novice_actions = np.array(grid_novice_actions)
-            grid_novice_uncertainties = np.array(grid_novice_uncertainties)
-            grid_states = np.stack(grid_states)
-            fig = plt.figure()
-            ax = plt.axes()
-            sc = ax.scatter(
-                grid_states[:, 0],
-                grid_states[:, 1],
-                c=grid_novice_uncertainties)
-            c_bar = plt.colorbar(sc)
-            plt.title(
-                "Grid Novice Uncertainty vs. State\n upper bound: {}".format(
-                    (novice.controller.covar_module.outputscale +
-                     novice.likelihood.noise).sqrt().item()))
-            plt.xlabel("theta")
-            plt.ylabel("theta_dot")
-            plt.savefig(
-                "img/grid_novice_uncertainty_{}.png".format(experiment_id),
-                dpi=300)
+            # grid_novice_actions = np.array(grid_novice_actions)
+            # grid_novice_uncertainties = np.array(grid_novice_uncertainties)
+            # grid_states = np.stack(grid_states)
+            # fig = plt.figure()
+            # ax = plt.axes()
+            # sc = ax.scatter(
+            #     grid_states[:, 0],
+            #     grid_states[:, 1],
+            #     c=grid_novice_uncertainties)
+            # c_bar = plt.colorbar(sc)
+            # plt.title(
+            #     "Grid Novice Uncertainty vs. State\n upper bound: {}".format(
+            #         (novice.controller.covar_module.outputscale +
+            #          novice.likelihood.noise).sqrt().item()))
+            # plt.xlabel("theta")
+            # plt.ylabel("theta_dot")
+            # plt.savefig(
+            #     "img/grid_novice_uncertainty_{}.png".format(experiment_id),
+            #     dpi=300)
 
     print("Average test duration for {} iterations: {}".format(
         num_experiments, np.mean(list_avg_test_durations)))
