@@ -182,13 +182,13 @@ def data_collection(env: gym.Env,
     return train_inputs, train_actions
 
 
-def test(env: gym.Env,
-         novice: BasePolicy,
-         figures_path: str,
-         num_trials: int = 10,
-         epsilon: float = 0,
-         use_gt_states: bool = False,
-         save_gif: bool = False):
+def test_novice(env: gym.Env,
+                novice: BasePolicy,
+                figures_path: str,
+                num_trials: int = 10,
+                epsilon: float = 0,
+                use_gt_states: bool = False,
+                save_gif: bool = False):
     """ Evaluation and visualization """
     img_transform = tf.Compose([tf.ToTensor(), tf.Resize((64, 64))])
 
@@ -289,7 +289,7 @@ if __name__ == "__main__":
     figures_path = os.path.join("img", "cart_pole_visual_novice")
     os.makedirs(figures_path, exist_ok=True)
 
-    num_experiments = 1
+    num_experiments = 5
 
     list_avg_test_durations = []
 
@@ -300,14 +300,14 @@ if __name__ == "__main__":
         print("----- Experiment {} -----".format(experiment_id))
 
         env = gym.make('CartPole-v1')
-        use_gt_states = True
+        use_gt_states = False
         novice = NoviceCartPole(
             num_frames=MODEL_INPUT_FRAMES,
             use_gt_states=use_gt_states,
             use_variational_GP=False)
 
         train_inputs, train_actions = data_collection(
-            env, num_episodes=10, epsilon=0., use_gt_states=use_gt_states)
+            env, num_episodes=2, epsilon=0, use_gt_states=use_gt_states)
 
         if VISUALIZE_EXPERT_DATA and use_gt_states:
             fig = plt.figure()
@@ -338,7 +338,7 @@ if __name__ == "__main__":
         #######################################
         ### Evaluation and visualization
         #######################################
-        avg_test_duration, all_novice_actions, all_novice_uncertainties, all_expert_actions, all_states = test(
+        avg_test_duration, all_novice_actions, all_novice_uncertainties, all_expert_actions, all_states = test_novice(
             env,
             novice,
             figures_path,
