@@ -116,7 +116,7 @@ class NoviceCartPole(BasePolicy):
                     loss.backward()
                     optimizer.step()
                     if use_tqdm:
-                        iterator.set_description(loss.detach().cpu().item())
+                        iterator.set_postfix(loss=loss.detach().cpu().item())
         else:
             """ Using Exact GP """
             # "Loss" for GPs - the marginal log likelihood
@@ -137,19 +137,21 @@ class NoviceCartPole(BasePolicy):
                 loss.backward()
                 optimizer.step()
                 if use_tqdm:
-                    iterator.set_description(loss.detach().cpu().item())
+                    iterator.set_postfix(loss=loss.detach().cpu().item())
         return loss.detach().cpu().item()
 
 
 def data_collection(env: gym.Env,
                     num_episodes: int = 10,
                     epsilon: float = 0.2,
-                    use_gt_states: bool = False):
+                    use_gt_states: bool = False,
+                    use_tqdm: bool = False):
     """ Collect demonstration dataset """
     train_inputs = []
     train_actions = []
     train_states = []
-    for i_episode in range(num_episodes):
+    iterator = tqdm(range(num_episodes)) if use_tqdm else range(num_episodes)
+    for i_episode in iterator:
         expert = ExpertCartPole()
         state = env.reset()
         for t in range(100):
@@ -179,7 +181,8 @@ def data_collection(env: gym.Env,
                 state, reward, done, info = env.step(action)
 
             if done:
-                print("Episode finished after {} timesteps".format(t + 1))
+                if not use_tqdm:
+                    print("Episode finished after {} timesteps".format(t + 1))
                 break
 
     train_inputs = torch.stack(train_inputs)
