@@ -200,5 +200,133 @@ class GPController(gpytorch.models.ExactGP):
         return gpytorch.distributions.MultivariateNormal(mean_a, covar_a)
 
 
+def collect_data_regressor(num_episodes: int = 1000):
+    import gym
+    from src.model.car_pole_novice import data_collection
+    env = gym.make('CartPole-v1')
+    train_inputs, _, train_states = data_collection(
+        env,
+        num_episodes=num_episodes,
+        epsilon=0.8,
+        use_gt_states=False,
+        use_tqdm=True)
+    env.close()
+    return train_inputs, train_states
+
+
+def train_regressor(
+    feature_extractor: torch.nn.Module,
+    train_inputs: torch.Tensor,
+    train_states: torch.Tensor,
+    num_iters: int = 40,
+    device: torch.device = torch.device('cuda')) -> list:
+    from torch.utils.data import DataLoader, TensorDataset
+    from tqdm import tqdm
+
+    feature_extractor.to(device)
+    feature_extractor.train()
+
+    # create dataset
+    train_dataset = TensorDataset(train_inputs, train_states)
+    train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
+
+    # optimizer and loss
+    optimizer = torch.optim.Adam(feature_extractor.parameters(), lr=0.02)
+    loss_fn = torch.nn.MSELoss()
+
+    # train loop
+    list_loss = []
+    iterator = tqdm(range(num_iters))
+    for it in iterator:
+        for x_batch, y_batch in train_loader:
+            x_batch = x_batch.to(device)
+            y_batch = y_batch.to(device)
+            optimizer.zero_grad()
+            pred = feature_extractor(x_batch)
+            loss = loss_fn(pred, y_batch)
+            loss.backward()
+            optimizer.step()
+            iterator.set_postfix(loss=loss.detach().cpu().item())
+            list_loss.append(loss.detach().cpu().item())
+
+    save_dir = "checkpoints/feature_extractor"
+
+    import os
+    os.makedirs(save_dir, exist_ok=True)
+
+    save_path = os.path.join(save_dir, "feature_extractor.pt")
+    torch.save(
+        {
+            "model_state_dict": feature_extractor.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "train_loss": list_loss
+        }, save_path)
+
+    return list_loss
+
+
+def test_regressor(checkpoint_path: str,
+                   device: torch.device = torch.device('cuda')):
+    from torch.utils.data import DataLoader, TensorDataset
+    from tqdm import tqdm
+
+    model = VisualFeatureCNNExtractor(
+        in_feats=2 * 3, out_feat=4, img_dim=64, device=device)
+    model.load_state_dict(torch.load(checkpoint_path)["model_state_dict"])
+
+    test_inputs, test_states = collect_data_regressor(num_episodes=10)
+
+    # create dataset
+    test_dataset = TensorDataset(test_inputs, test_states)
+    test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
+
+    # test loop
+    errors = []
+    with torch.no_grad():
+        for x_batch, y_batch in tqdm(test_loader):
+            x_batch = x_batch.to(device)
+            pred = model(x_batch)
+            errors.append(torch.abs(pred.cpu() - y_batch))
+    errors = torch.concat(errors, dim=0)
+    print(torch.mean(errors, dim=0))
+    print(torch.std(errors, dim=0))
+
+
 if __name__ == "__main__":
-    controller = VisualGPController()
+    # ##########################################
+    # Train a regressor from img to state
+    #
+    import os
+    from matplotlib import pyplot as plt
+
+    device = torch.device(
+        'cuda') if torch.cuda.is_available() else torch.device('cpu')
+
+    do_training = True
+    save_dir = "checkpoints/feature_extractor"
+    os.makedirs(save_dir, exist_ok=True)
+    save_path = os.path.join(save_dir, "feature_extractor.pt")
+
+    if do_training:
+        feature_extractor = VisualFeatureCNNExtractor(
+            in_feats=2 * 3, out_feat=4, img_dim=64, device=device)
+        train_inputs, train_states = collect_data_regressor(num_episodes=3000)
+        losses = train_regressor(
+            num_iters=100,
+            feature_extractor=feature_extractor,
+            train_inputs=train_inputs,
+            train_states=train_states,
+            device=device)
+
+        plt.figure()
+        plt.plot(losses)
+        plt.title("Feature Extractor Training Loss")
+        plt.xlabel("Iterations")
+        plt.ylabel("Loss")
+        plt.savefig(os.path.join(save_dir, "train_loss.png"), dpi=300)
+
+    # test time
+    test_regressor(save_path, device)
+
+    # show fig
+    plt.show()
