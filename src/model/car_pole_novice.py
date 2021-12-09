@@ -8,6 +8,8 @@ from tqdm import tqdm
 from matplotlib import pyplot as plt
 import imageio
 import os
+import h5py
+from functools import partial
 
 from src.model.visual_controller import (GPController, VisualGPController,
                                          VisVarGPCtrler)
@@ -18,6 +20,7 @@ VISUALIZE_EXPERT_DATA = True
 VISUALIZE_NOVICE_UNCERTAINTIES = True
 MODEL_INPUT_FRAMES = 2  # only 2 frames are supported
 UNCERTAINTY_ANALYSIS = True
+STORE_DEMO_DATASET = True
 
 theta_scaling_factor = 100
 theta_dot_scaling_factor = 10
@@ -294,8 +297,16 @@ def grid_uncertainty_visual(novice: BasePolicy,):
     return all_novice_actions, all_novice_uncertainties, all_states
 
 
+def store_demo_dataset(data: dict, path: str):
+    with h5py.File(path, "w") as hf:
+        create_dataset = partial(hf.create_dataset, compression="gzip")
+        for k, v in data.items():
+            create_dataset(k, data=v)
+
+
 if __name__ == "__main__":
-    figures_path = os.path.join("img", "cart_pole_visual_novice")
+    job_name = "cart_pole_visual_novice"
+    figures_path = os.path.join("img", job_name)
     os.makedirs(figures_path, exist_ok=True)
 
     num_experiments = 5
@@ -317,6 +328,31 @@ if __name__ == "__main__":
 
         train_inputs, train_actions, train_states = data_collection(
             env, num_episodes=10, epsilon=0, use_gt_states=use_gt_states)
+
+        if STORE_DEMO_DATASET:
+            data_path = os.path.join("data", job_name)
+            os.makedirs(data_path, exist_ok=True)
+
+            file_name = os.path.join(
+                data_path, "img_demo_dataset_{}.hdf5".format(experiment_id))
+            data = {
+                "train_imgs": train_inputs.numpy(),
+                "train_actions": train_actions.numpy(),
+                "train_states": train_states.numpy(),
+            }
+            store_demo_dataset(data, file_name)
+
+            test_inputs, test_actions, test_states = data_collection(
+                env, num_episodes=10, epsilon=0.2, use_gt_states=use_gt_states)
+            file_name = os.path.join(
+                data_path, "img_test_dataset_{}.hdf5".format(experiment_id))
+            test_data = {
+                "test_imgs": test_inputs.numpy(),
+                "test_actions": test_actions.numpy(),
+                "test_states": test_states.numpy(),
+            }
+            store_demo_dataset(test_data, file_name)
+            continue
 
         if VISUALIZE_EXPERT_DATA:
             fig = plt.figure()
@@ -384,6 +420,7 @@ if __name__ == "__main__":
                     dpi=300)
                 # plt.show()
 
+                # TODO: wtf is this?
                 novice_actions_binary = (all_novice_actions >= 0.5)
                 action_error = np.abs(novice_actions_binary -
                                       all_expert_actions)
@@ -417,29 +454,6 @@ if __name__ == "__main__":
                 "img/error_vs_uncertainty_{}.png".format(experiment_id),
                 dpi=300)
             # plt.show()
-
-            # grid_novice_actions, grid_novice_uncertainties, grid_states = grid_uncertainty_visual(
-            #     novice)
-
-            # grid_novice_actions = np.array(grid_novice_actions)
-            # grid_novice_uncertainties = np.array(grid_novice_uncertainties)
-            # grid_states = np.stack(grid_states)
-            # fig = plt.figure()
-            # ax = plt.axes()
-            # sc = ax.scatter(
-            #     grid_states[:, 0],
-            #     grid_states[:, 1],
-            #     c=grid_novice_uncertainties)
-            # c_bar = plt.colorbar(sc)
-            # plt.title(
-            #     "Grid Novice Uncertainty vs. State\n upper bound: {}".format(
-            #         (novice.controller.covar_module.outputscale +
-            #          novice.likelihood.noise).sqrt().item()))
-            # plt.xlabel("theta")
-            # plt.ylabel("theta_dot")
-            # plt.savefig(
-            #     "img/grid_novice_uncertainty_{}.png".format(experiment_id),
-            #     dpi=300)
 
     print("Average test duration for {} iterations: {}".format(
         num_experiments, np.mean(list_avg_test_durations)))
