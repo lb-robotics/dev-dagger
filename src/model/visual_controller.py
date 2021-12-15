@@ -1,4 +1,3 @@
-from __future__ import annotations
 import torch
 from torch import nn
 import gpytorch
@@ -22,7 +21,7 @@ class VisualFeatureCNNExtractor(nn.Module):
         model = []
         """ Convolutional part """
         out_feats = cnn_scaling * in_feats
-        num_deep_layers = 2
+        num_deep_layers = 4
         for _ in range(num_deep_layers):
             model += [
                 nn.Conv2d(
@@ -40,11 +39,13 @@ class VisualFeatureCNNExtractor(nn.Module):
 
         self.model = nn.Sequential(*model)
 
-        in_feats_head = int(in_feats * (self.img_dim / num_deep_layers**2)**2)
+        in_feats_head = int(in_feats * (self.img_dim / 2**num_deep_layers)**2)
         self.extractor_head = nn.Sequential(
-            nn.Linear(in_features=in_feats_head, out_features=in_feats_head),
+            nn.Linear(
+                in_features=in_feats_head, out_features=in_feats_head // 4),
+            nn.BatchNorm1d(in_feats_head // 4),
             nn.ReLU(),
-            nn.Linear(in_features=in_feats_head, out_features=out_feat),
+            nn.Linear(in_features=in_feats_head // 4, out_features=out_feat),
         ).to(self.device)
 
         self.to(self.device)
@@ -75,6 +76,7 @@ class VisualGPController(gpytorch.models.ExactGP):
                  likelihood,
                  num_frames: int = 1,
                  img_dim: int = 64,
+                 latent_dim: int = 4,
                  device='cuda') -> None:
         """
         Args:
@@ -93,7 +95,10 @@ class VisualGPController(gpytorch.models.ExactGP):
         self.img_dim = img_dim
         self.num_frames = num_frames
         self.feature_extractor = VisualFeatureCNNExtractor(
-            in_feats=num_frames * 3, img_dim=img_dim, device=device)
+            in_feats=num_frames * 3,
+            out_feat=latent_dim,
+            img_dim=img_dim,
+            device=device)
 
         self.to(device)
 

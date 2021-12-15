@@ -10,6 +10,7 @@ import imageio
 import os
 import h5py
 from functools import partial
+import colorsys
 
 from src.model.visual_controller import (GPController, VisualGPController,
                                          VisVarGPCtrler)
@@ -18,9 +19,10 @@ from src.model.policy_base import BasePolicy
 
 VISUALIZE_EXPERT_DATA = True
 VISUALIZE_NOVICE_UNCERTAINTIES = True
+VIS_LATENT_SPACE = True
 MODEL_INPUT_FRAMES = 2  # only 2 frames are supported
 UNCERTAINTY_ANALYSIS = True
-STORE_DEMO_DATASET = True
+STORE_DEMO_DATASET = False
 
 theta_scaling_factor = 100
 theta_dot_scaling_factor = 10
@@ -32,11 +34,13 @@ class NoviceCartPole(BasePolicy):
                  num_frames=1,
                  use_gt_states=False,
                  use_variational_GP=False,
+                 latent_dim=4,
                  device='cuda') -> None:
         self.controller = None
         self.use_gt_states = use_gt_states
         self.num_frames = num_frames
         self.use_variational_GP = use_variational_GP
+        self.latent_dim = latent_dim
         self.device = device
 
     def create_model(
@@ -69,7 +73,8 @@ class NoviceCartPole(BasePolicy):
                     train_x=img_train,
                     train_y=action_train,
                     likelihood=self.likelihood,
-                    num_frames=self.num_frames)
+                    num_frames=self.num_frames,
+                    latent_dim=self.latent_dim)
 
     def control(self, observation: torch.Tensor) -> tuple:
         self.controller.eval()
@@ -274,6 +279,56 @@ def test_novice(env: gym.Env,
     return avg_test_duration, all_novice_actions, all_novice_uncertainties, all_expert_actions, all_states
 
 
+def collect_latent_variables(env: gym.Env,
+                             novice: BasePolicy,
+                             num_trials: int = 10,
+                             epsilon: float = 0):
+    """ Evaluation and visualization """
+    img_transform = tf.Compose([tf.ToTensor(), tf.Resize((64, 64))])
+
+    novice.controller.feature_extractor.eval()
+    all_states = []
+    all_latents = []
+    with torch.no_grad():
+        for i in range(num_trials):
+            expert = ExpertCartPole()
+            state = env.reset()
+            for t in range(100):
+                expert_pid = expert.control(torch.from_numpy(state))
+                expert_pid = expert_pid.numpy()
+
+                img = env.render(mode="rgb_array")
+
+                img = img_transform(img.astype(np.float32) / 255.0).to('cuda')
+                if t < MODEL_INPUT_FRAMES - 1:
+                    stack_img = torch.cat([img, img], dim=0)
+                else:
+                    stack_img = torch.cat([prev_img, img], dim=0)
+
+                latent_vector = novice.controller.feature_extractor(
+                    stack_img.clone().unsqueeze(0))
+
+                prev_img = img.clone()
+
+                all_states.append(state)
+                all_latents.append(
+                    latent_vector.detach().cpu().numpy().squeeze())
+
+                action = 0 if expert_pid < 0 else 1
+                choice = np.random.uniform(0, 1)
+                if choice < epsilon:
+                    state, reward, done, info = env.step(
+                        env.action_space.sample())
+                else:
+                    state, reward, done, info = env.step(action)
+
+                if done:
+                    break
+            print("Episode finished after {} timesteps".format(t + 1))
+
+    return all_states, all_latents
+
+
 def grid_uncertainty_visual(novice: BasePolicy,):
     all_novice_actions = []
     all_novice_uncertainties = []
@@ -304,12 +359,20 @@ def store_demo_dataset(data: dict, path: str):
             create_dataset(k, data=v)
 
 
+def vector2d_colormap(x: np.ndarray, y: np.ndarray, r_max: float):
+    h = np.arctan2(y, x) / (2 * np.pi) + 0.5
+    s = np.clip(np.sqrt(x**2 + y**2) / r_max, 0.2, 1)
+    rgbs = [colorsys.hsv_to_rgb(hi, si, 1.0) for hi, si in zip(h, s)]
+
+    return rgbs
+
+
 if __name__ == "__main__":
     job_name = "cart_pole_visual_novice"
     figures_path = os.path.join("img", job_name)
     os.makedirs(figures_path, exist_ok=True)
 
-    num_experiments = 5
+    num_experiments = 1
 
     list_avg_test_durations = []
 
@@ -324,10 +387,11 @@ if __name__ == "__main__":
         novice = NoviceCartPole(
             num_frames=MODEL_INPUT_FRAMES,
             use_gt_states=use_gt_states,
-            use_variational_GP=False)
+            use_variational_GP=False,
+            latent_dim=2)
 
         train_inputs, train_actions, train_states = data_collection(
-            env, num_episodes=10, epsilon=0, use_gt_states=use_gt_states)
+            env, num_episodes=10, epsilon=0.2, use_gt_states=use_gt_states)
 
         if STORE_DEMO_DATASET:
             data_path = os.path.join("data", job_name)
@@ -364,7 +428,6 @@ if __name__ == "__main__":
             plt.xlabel("theta")
             plt.ylabel("theta_dot")
             plt.savefig("img/expert_data_{}.png".format(experiment_id), dpi=300)
-            # plt.show()
 
         #######################################
         ### Train an imitation model based on the demonstration dataset
@@ -380,13 +443,49 @@ if __name__ == "__main__":
         else:
             novice.create_model(train_inputs, train_actions)
             novice.train(
-                1000,
+                100,
                 train_x=train_inputs.to('cuda'),
-                train_y=train_actions.to('cuda'))
+                train_y=train_actions.to('cuda'),
+                use_tqdm=True)
 
         #######################################
         ### Evaluation and visualization
         #######################################
+        if VIS_LATENT_SPACE:
+            all_states_lat, all_latents_lat = collect_latent_variables(
+                env, novice, num_trials=10, epsilon=0.2)
+            all_states_lat = np.stack(all_states_lat)
+            all_latents_lat = np.stack(all_latents_lat)
+
+            thetas = all_states_lat[:, 2] / np.max(all_states_lat[:, 2])
+            theta_dots = all_states_lat[:, 3] / np.max(all_states_lat[:, 3])
+
+            rmax = np.max(
+                np.linalg.norm(np.stack([thetas, theta_dots]), axis=0))
+            rgb_states = vector2d_colormap(thetas, theta_dots, rmax)
+
+            plt.figure()
+            plt.scatter(
+                all_states_lat[:, 2], all_states_lat[:, 3], c=rgb_states)
+            plt.title("Ground truth states")
+            plt.xlabel("theta")
+            plt.ylabel("theta_dot")
+            plt.savefig(
+                "img/latentVis_gt_states_{}.png".format(experiment_id), dpi=300)
+
+            plt.figure()
+            plt.scatter(
+                all_latents_lat[:, 0], all_latents_lat[:, 1], c=rgb_states)
+            plt.title("Latent variables")
+            plt.xlabel("dim 1")
+            plt.ylabel("dim 2")
+            plt.savefig(
+                "img/latentVis_latents_{}.png".format(experiment_id), dpi=300)
+            plt.show()
+
+            import ipdb
+            ipdb.set_trace()
+
         avg_test_duration, all_novice_actions, all_novice_uncertainties, all_expert_actions, all_states = test_novice(
             env,
             novice,
@@ -400,8 +499,6 @@ if __name__ == "__main__":
         all_novice_uncertainties = np.array(all_novice_uncertainties)
         all_expert_actions = np.array(all_expert_actions)
         all_states = np.stack(all_states)
-
-        env.close()
 
         if UNCERTAINTY_ANALYSIS:
             if VISUALIZE_NOVICE_UNCERTAINTIES:
@@ -454,6 +551,8 @@ if __name__ == "__main__":
                 "img/error_vs_uncertainty_{}.png".format(experiment_id),
                 dpi=300)
             # plt.show()
+
+        env.close()
 
     print("Average test duration for {} iterations: {}".format(
         num_experiments, np.mean(list_avg_test_durations)))
