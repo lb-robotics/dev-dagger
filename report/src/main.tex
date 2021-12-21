@@ -31,7 +31,7 @@ Zhihao Ruan [ruanzh@seas.upenn.edu] \\
 % \end{center}
 
 \begin{abstract}
-	\todo[inline]{Kun: A brief summary of what we are doing, what we've achieved}
+	\todo[inline]{Zhihao: A brief summary of what we are doing, what we've achieved}
 \end{abstract}
 
 \maketitle
@@ -53,7 +53,7 @@ Traditional exact GP suffers from the limitation of dataset in order to achieve 
 
 \subsection{Uncertainty Estimation}
 
-\todo[inline]{Zhihao: revise this section, separate this section into 3 subsections above: problem formulation, Imitation Learning and DAgger}
+\todo[inline]{Zhihao: revise this section, separate this section into 3 subsections above: problem formulation, Imitation Learning and DAgger; Do mention details of the CNN model architecture}
 
 Our proposed approach is composed of two parts: a novel probabilistic visuomotor controller and an uncertainty-based decision rule for DAgger to optimize expert query frequency.
 
@@ -64,8 +64,7 @@ The trade-off between exploration using the learned novice policy $\pi_{nov}$ an
 \todo[inline]{add algorithm block or final presentation slide page 16; add model architecture like final presentation slide page 12 and 14}
 
 \section{Experimental Results}
-\todo[inline]{Kun: describe the task env, expert controller, GT-IL with GP, Vis-IL with GP, and uncertainty estimation in both ILs}
-Our experiments focus on imitation learning with Gaussian Processes and the potential of using Deep Kernel Learning (CNN + GP) to estimate uncertainties from images. In this section, we present experimental validation for the following claims:
+Our experiments focus on imitation learning with Gaussian Processes, the potential of using Deep Kernel Learning (CNN + GP) to estimate uncertainties from images, and eventually DevDAgger. In this section, we present experimental validation for the following claims:
 \begin{enumerate}
 	\item Assuming access to the ground truth states of agents
 	      \begin{enumerate}
@@ -93,7 +92,9 @@ To justify the above claims, we test our proposed approaches on a simple cart-po
 
 \subsection{Imitation Learning \& Uncertainty Estimation with Gaussian Processes}
 \subsubsection{State-based Imitation Learning}
-When the ground truth states of the cart-pole system are accessible, we use a GP to directly regress the function mapping from states to actions based on the demonstration dataset collected by the expert controller. One of the key benefits of using GP is the learning efficiency, and this is supported by the quantitative results shown in Table \ref{tab:comparison}. The state-based GP controller is able to learn from very few examples (Fig \ref{fig:state-il}:Left), and achieves high accuracies in the state space covered by the training dataset, in the meantime generalizes reasonably well to unseen states (Fig \ref{fig:state-il}:Right). Furthermore, GP is able to model the epistemic uncertainty (Fig \ref{fig:state-il}:Middle), in which unseen states generally correspond to high uncertainties.
+When the ground truth states of the cart-pole system are accessible, we use a GP to directly regress the function mapping from states to actions based on the demonstration dataset collected by the expert controller. One of the key benefits of using GP is the learning efficiency, and this is supported by the quantitative results shown in Table \ref{tab:comparison}. The state-based GP controller is able to learn from very few examples (Fig \ref{fig:state-il}:Left), and achieves high accuracies in the state space covered by the training dataset, in the meantime generalizes reasonably well to unseen states (Fig \ref{fig:state-il}:Right).
+
+Furthermore, GP is able to model the epistemic uncertainty (Fig \ref{fig:state-il}:Middle), in which unseen states generally correspond to high uncertainties.
 
 \begin{figure}[ht]
 	\centering
@@ -102,28 +103,32 @@ When the ground truth states of the cart-pole system are accessible, we use a GP
 	\label{fig:state-il}
 \end{figure}
 
-\subsubsection{Visual Imitation Learning}
+\subsubsection{Visual Imitation Learning} \label{vis-il}
+To explore the possibilities of using non-parametric models like GP for high dimensional inputs, we experiment Deep Kernel Learning with a simple imitation learning task. Note that doing visuomotor control is an inherently difficult task in the sense that the model must learn to extract visual features.
+We stack two adjacent images together to feed in velocity information.
+Compared with state-based IL, visual IL  achieves worse performance despite requiring more training data (Table \ref{tab:comparison}).
+
+We further visualize the uncertainty estimation on the testing dataset in Fig \ref{fig:visual-il}:Middle, and discover that the epistemic uncertainties are not correctly modeled by Deep Kernel Learning, as two observations correspond to very different uncertainties even though their ground truth states are extremely close.
 
 \begin{figure}[ht]
 	\centering
-	\includegraphics[width=\linewidth]{imgs/visual-il.png}
+	% \includegraphics[width=\linewidth]{imgs/visual-il.png}
+	\includegraphics[width=0.32\linewidth]{imgs/expert_data_0.png}
+	\includegraphics[width=0.32\linewidth]{imgs/novice_uncertainty_0.png}
+	\includegraphics[width=0.32\linewidth]{imgs/novice_error_0.png}
 	\caption{Visual imitation learning with GP.}
 	\label{fig:visual-il}
 \end{figure}
+
+To investigate this issue of uncertainty estimation, following the visualization protocol presented in prior work ``Embed to control'' \cite{watter2015embed}, we set the CNN output latent space to be 2-dimensional, and visualize the mapping between the state space and the latent space as shown in Fig \ref{fig:latent}. Ideally the CNN would be forced to extract the true state information from visual observations. However, the Deep Kernel Learning model fails to discover the underlying structure of the state space. Our hypothesis for this phenomenon is that the image distance does not reflect the actual state distance, thus, without constraints, the model naturally has no clue to learn a structured latent space.
 
 \begin{figure}[ht]
 	\centering
 	\includegraphics[width=0.4\linewidth]{imgs/latentVis_gt_states_0.png}
 	\includegraphics[width=0.4\linewidth]{imgs/latentVis_latents_0.png}
-	\caption{Visualization of latent space learned by the CNN.}
+	\caption{Visualization of the latent space learned by the CNN. Left: ground truth states; Right: corresponding learned latent representations. Points in the true state space and the latent space are associated by color.}
 	\label{fig:latent}
 \end{figure}
-
-\subsection{DevDAgger: Uncertainty-based Decision Rule for DAgger}
-
-\subsubsection{State-base DevDAgger}
-
-\subsubsection{Visual DevDAgger}
 
 \begin{table}[ht]
 	\centering
@@ -148,14 +153,31 @@ When the ground truth states of the cart-pole system are accessible, we use a GP
 	\label{tab:comparison}
 \end{table}
 
+\subsection{DevDAgger: Uncertainty-based Decision Rule for DAgger}
+We further experiment with incorporating uncertainty estimation into online imitation learning algorithm DAgger.
+
+\subsubsection{State-base DevDAgger}
+The uncertainty-based decision rule is set as followings: if the predicted uncertainty is larger than $\alpha \sigma_{prior}$ where $\alpha=0.7$, query the expert policy for what action $a$ to take, and aggregate this new state-action pair $(s, a)$ to the current dataset; otherwise, rollout the current novice policy.
+
+With each newly aggregated state-action pair, ideally we would train the GP model again, however, an exact GP model is trained every $30$ data collection steps with the aim to improve runtime efficiency.
+
+The quantitative comparison between the state-based IL and the state-based DevDAgger in Table \ref{tab:comparison} shows that the proposed uncertainty-aware decision rule is able to learn a better policy with fewer expert queries in an online fashion given the ground truth states.
+
+\subsubsection{Visual DevDAgger}
+We use the same uncertainty threshold $\alpha$, and experimented with different latent space dimensions $2, 4, 8, 16$.
+As discussed in section \ref{vis-il}, the uncertainty estimation of the Deep Kernel Learning model is very problematic due to the unstructured learned latent space. This phenomenon causes the unreasonable behavior of the uncertainty-aware decision rule and fails to improve the performance compared with visual imitation learning (Table \ref{tab:comparison}).
+
 \section{Future Work}
-\todo[inline]{Kun: how to learn structured latent space that is suitable for IL? gt-state regression from image? contrastive learning with access to gt-states? E2C paper \cite{watter2015embed}?}
+To resolve the issue with the uncertainty estimation of visual GP imitation learning, a structured latent space has to be enforced by adding constraints to the model. A very simple solution would be to train a regression model that predicts the ground truth states from images. We can also use contrastive learning to enforce the structure in the learned latent space. However, both of these two methods rely on supervision, i.e. providing ground truth states as labels for each image.
+
+Without ground truth states as supervision, proposed by \cite{watter2015embed}, we could train a dynamics model in the latent space and force the dynamical model to be linear. As an extension to \cite{watter2015embed}, a more recent work \cite{levine2019prediction} achieves better results in terms of the latent space structure.
 
 \section{Conclusion}
+\todo[inline]{Zhihao}
 
- {
-  \bibliographystyle{unsrt}
-  \bibliography{egbib}
- }
+{
+	\bibliographystyle{unsrt}
+	\bibliography{egbib}
+}
 
 \end{document}
