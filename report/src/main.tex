@@ -16,6 +16,7 @@
 \usepackage{hyperref}
 \usepackage{hhline}
 \usepackage{microtype}
+\usepackage[numbers]{natbib}
 \microtypecontext{spacing=nonfrench}
 
 \usepackage{times}
@@ -31,37 +32,70 @@ Zhihao Ruan [ruanzh@seas.upenn.edu] \\
 % \end{center}
 
 \begin{abstract}
-	\todo[inline]{Zhihao: A brief summary of what we are doing, what we've achieved}
+	DAgger is a well-known online imitation learning algorithm in robot planning and control problems. Traditional DAggers suffer from the problem of high expert querying rate and could be costly under situations where expert querying is expensive. Moreover, traditional DAgger has not yet developed a state-of-the-art solution for vision-based planning and control. We propose DevDAgger, a vision-based data-efficient DAgger algorithm based on CNN and Gaussian Processes (GP) targeting low expert querying rate and visual imitation learning. We demonstrated our algorithm on the simple cart-pole problem and showed that state-based DevDAgger outperforms Vanilla DAgger in both performance and expert querying rates.
 \end{abstract}
 
 \maketitle
 
 \section{Introduction}
-\todo[inline]{Zhihao: revise this section. VAE $\rightarrow$ CNN}
-Imitation learning is commonly used in planning and control in high-dimensional state space with non-linear dynamical model in robotics. It offers robots the ability to manipulate in complex environment without explicitly modelling the environment by imitating the control actions from an expert (i.e., human). Dataset Aggregation (DAgger) \cite{dagger}, in particular, is a popular online imitation learning algorithm that trains the controller while aggregating new data queried from the expert simultaneously. Traditional DAgger uses a neural network to train the controller, requiring lots of expert data which is often costly to obtain in many situations. On the contrary, Gaussian Process (GP) is a commonly used model-free data efficient technique for regression tasks. Recent literature also shows a particular interest in vision-based robotic planning and control problems (visuomotor control) \cite{vision-based-RL,ebert2018visual,xie2018few}. As a consequence, we propose a \emph{Data-Efficient Vision-based DAgger (DevDAgger)} algorithm for imitation learning tasks, combining the advantage of Gaussian Process and latent representation learning with Variational Autoencoders (VAEs).
+Imitation learning is commonly used in planning and control in high-dimensional state space with non-linear dynamical model in robotics. It offers robots the ability to manipulate in complex environment without explicitly modelling the environment by imitating the control actions from an expert (i.e., human). Dataset Aggregation (DAgger) \cite{dagger}, in particular, is a popular online imitation learning algorithm that trains the controller while aggregating new data queried from the expert simultaneously. Traditional DAgger uses a neural network to train the controller, requiring lots of expert data which is often costly to obtain in many situations. This can actually be improved by replacing the neural network with Gaussian Process (GP), which is a commonly used model-free data efficient technique for regression tasks. Recent literature also shows a particular interest in vision-based robotic planning and control problems (visuomotor control) \cite{vision-based-RL,ebert2018visual,xie2018few}. As a consequence, we propose a \emph{Data-Efficient Vision-based DAgger (DevDAgger)} algorithm for imitation learning tasks, combining the advantage of Gaussian Process and latent representation learning with Convolutional Neural Networks (CNNs).
 
 \section{Related Work}
-\todo[inline]{Zhihao: revise this section; emphasize if there exists prior work that uses non-parametric GP for IL; emphasize that the major draw-back of ensembleDAgger is the fact they don't do visual control, us doing visual control introduces another layer of complexity to our pipeline, another minor thing is that they explicitly mention that they use emsembles and Monte-carlo methods as approximation for GP, whereas we simply use GP.}
-DAgger was proposed in 2011 as an online supervised learning algorithm for imitation learning by constantly aggregating data from the expert and imitating expert's behaviors \cite{dagger}. Recent works have addressed some drawbacks of DAgger by improving the expert data querying efficiency \cite{safe-dagger}. Uncertainty estimation was also introduced to DAgger in \cite{ensemble-dagger} to improve the training-time safety.
+Imitation learning, as a supervised learning algorithm for robotic planning and control, has long been a significant part in robotic research. A great variety of approaches has been proposed for the traditional imitation learning tasks. On one hand, many approaches has attempted to incorporate \textit{parametric models} to the imitation learning problem, such as dynamic movement primitives (DMP) \cite{dmp}, Gaussian mixture models (GMM) \cite{gmm-for-IL}, and probabilistic movement primitives (ProMP) \cite{ProMP}. On the other hand, recent literature has also shown an extensive attention to \textit{non-parametric models}, such as kernelized movement primitives (KMP) \cite{non-parametric-il} and linearly constrained kernelized movement primitives (LC-KMP) \cite{non-parametric-il-linear-constraints}.
 
-Traditional exact GP suffers from the limitation of dataset in order to achieve reasonable amount of training time and thus cannot be put into direct use in large scale learning tasks. However, as the computational efficiency of exact GP has been greatly improved recently \cite{exact-gp-million,GPyTorch}, we decided to utilize the power of exact GP in our DAgger solution. At the same time, although the GP suffers from the curse of dimensionality, recent works have shown that using Variational Autoencoders to map the structured high-dimensional inputs to latent space \cite{grosnit2021high} dramatically expands the capability of GPs.
+DAgger, as an online imitation learning algorithm, was proposed in 2011 by constantly aggregating data from the expert and imitating expert's behaviors \cite{dagger}. Recent works have addressed some drawbacks of DAgger by improving the expert data querying efficiency \cite{safe-dagger}. Uncertainty estimation was also introduced to DAgger by EnsembleDAgger \cite{ensemble-dagger} to improve the training-time safety.
+
+Gaussian Processes (GP) itself has been a simple yet powerful non-parametric model for general regression tasks. Traditional exact GP suffers from the limitation of dataset in order to achieve reasonable amount of training time and thus cannot be put into direct use in large scale learning tasks. However, the computational efficiency of exact GP has recently been greatly improved by GPyTorch \cite{exact-gp-million,GPyTorch}. By leveraging the power of GPyTorch, exact GP has now become a new option for imitation learning, while EnsembleDAgger still attempts to incorporate ensembles and Monte-Carlo methods as an approximation to exact GP \cite{ensemble-dagger}.
+
+To summarize, we decided to utilize the power of exact GP in our DAgger solution. We also incorporated the use of CNN to achieve vision-based planning and control as an extra layer to the traditional DAgger pipeline. Meanwhile, although GP suffers from the curse of dimensionality, recent works have shown that mapping the structured high-dimensional inputs to latent space \cite{grosnit2021high} dramatically expands the capability of GP.
 
 \section{Approach}
+Our proposed DevDAgger aims to provide a fast and data-efficient framework for vision-based online imitation learning, or DAgger. As discussed above, the existing designs of DAgger still attempts to use various approximations to GP for uncertainty estimation, and has not yet incorporated vision-based planning and control. Therefore, our proposed DevDAgger is composed of two parts: a novel probabilistic visuomotor controller and an uncertainty-based decision rule for DAgger to optimize expert query frequency.
+
 \subsection{Problem Formulation}
+In the context of general imitation learning, one would need the following definitions: a \textit{novice} policy, an \textit{expert} policy, a well-defined state space and a well-defined action space. Imitation learning generally trains the novice to produce action $a_t$ exactly as the expert given some current observation of the state $o_t$.
+
+DAgger works as an online algorithm for imitation learning. Figure \ref{fig:dagger_diagram} illustrates the workflow of a general DAgger. DAgger collects dataset and trains the novice as the novice acts out in the environment. Given some observations $o_t$ from the environment, both novice and expert would generate their own actions $a_\text{nov}$ and $a_\text{exp}$. A pre-defined decision rule would then choose an action $a_t$ and append the observation-action pair $(o_t,a_t)$ to the dataset. The novice then gets trained and observes a new $o_t$ in the next iteration.
+
+As more and more iteration takes place, the novice gets trained for more and more times and would act more and more similar to the expert. The decision rule decides whether the novice action $a_\text{nov}$ or the expert action $a_\text{exp}$ should be added to the dataset for the next training. There should always be some novice actions in the dataset to ensure that the novice policy is generalizable to unvisited states.
+\begin{figure}[htbp!]
+	\centering
+	\includegraphics[width=0.5\linewidth]{imgs/dagger_diagram.png}
+	\caption{Illustration of workflow of general DAgger \cite{ensemble-dagger}.}
+	\label{fig:dagger_diagram}
+\end{figure}
 
 \subsection{Imitation Learning with Gaussian Processes}
+Our algorithm starts with an observation-action pair $(o_t, a_t)$ from the dataset. We first map the visual inputs $o_t$ into some latent space using the CNN defined in Figure \ref{fig:conv_diagram}. Given the colored visual inputs, we resize the images to be $3\times 64\times 64$ and stack the visual inputs from 2 consecutive frames together in the color dimension in order to provide speed information to the CNN, forming a final input of size $6\times 64\times 64$. The images are then forwarded through the CNN and produces the corresponding latent space feature points $z_t$. All convolutional layers use the SAME padding. Although Figure \ref{fig:conv_diagram} only shows 2 sets of convolution layers, there can be multiple sets of convolution layers in the CNN architecture and this is a hyperparameter that should be tuned according to different environments and robot dynamics models.
+
+The output dimension of the linear layers of the CNN are shrunk by a factor of 4 in each layer. The linear layers would finally produce a latent space feature point $z_t$ according to each $o_t$.
+
+\begin{figure}[htbp!]
+	\centering
+	\includegraphics[width=\linewidth]{imgs/conv_diagram.png}
+	\caption{Diagram for mapping from image space to GP latent space.}
+	\label{fig:conv_diagram}
+\end{figure}
+
+Given the latent space feature points $z_t$, we then perform a GP regression task over $(z_t,a_t)$ using GPyTorch \cite{GPyTorch}. The predicted probability distribution of action over latent space from the GP model is then passed into a Gaussian likelihood function, and the predicted novice action $a_\text{nov}$ is defined as the mean of the likelihood.
 
 \subsection{Uncertainty Estimation}
+Similar to EnsembleDAgger \cite{ensemble-dagger}, we use the uncertainty measurements from GP as a criterion for choosing the novice action over the expert action in the decision rule. The uncertainty measurements from GP is defined as the standard deviation of the likelihood.
 
-\todo[inline]{Zhihao: revise this section, separate this section into 3 subsections above: problem formulation, Imitation Learning and DAgger; Do mention details of the CNN model architecture}
+\begin{figure}[htbp!]
+	\centering
+	\includegraphics[width=\linewidth]{imgs/dev_dagger_diagram.png}
+	\caption{Illustration of workflow for DevDAgger.}
+	\label{fig:devdagger_diagram}
+\end{figure}
 
-Our proposed approach is composed of two parts: a novel probabilistic visuomotor controller and an uncertainty-based decision rule for DAgger to optimize expert query frequency.
+As shown in Figure \ref{fig:devdagger_diagram}, the decision rule for DevDAgger is that expert action $a_\text{exp}$ are only executed and queried for the given $o_t$ whenever the novice is highly uncertain of its own action $a_\text{nov}$. Specifically, we set an expert querying threshold for the GP output uncertainty measurement that
+\begin{equation}
+	\text{Uncertainty upper bound}=\alpha \times \sqrt{\text{covar\_module.outputscale}+\text{likelihood.noise}}
+\end{equation}
+where $\alpha$ is a tunable hyperparameter. Whenever $a_\text{nov}$ comes with an uncertainty higher than this upper bound, DevDAgger would query the expert and aggregate $a_\text{exp}$ to the dataset.
 
-In a visual imitation learning setting, the visuomotor controller takes an image $O_t$ as the input, and outputs the control action $a_t$ that's learned from the expert's demonstrations. Traditionally such visuomotor is realized by end-to-end deep convolutional neural networks \cite{pmlr-v78-finn17a}. However, in order to exploit the structural information embedded in the high-dimensional visual inputs, we propose to use a Variational Autoencoder to explicitly map the images to low-dimensional latent representations $z_t$ in an unsupervised manner. To learn an uncertainty-aware controller based on the latent representations $z_t$, we propose to use Gaussian process due to its capability of fitting functions with accurate estimations of the uncertainties while at the same time using fewer data.
-
-The trade-off between exploration using the learned novice policy $\pi_{nov}$ and exploitation using the expert policy $\pi_{exp}$ can be automatically benefited from the knowledge of uncertainties. We propose to use the uncertainty estimation coming from the Gaussian process to derive a sampling-based decision rule for DAgger. The underlying intuition is that when the uncertainty is high, we need to query the expert for their demonstration; otherwise, we can simply use our learned novice policy to collect trajectories. As a result, we should be able to significantly reduce the amount of expert demonstrations that is required for training a novice policy.
-
-\todo[inline]{add algorithm block or final presentation slide page 16; add model architecture like final presentation slide page 12 and 14}
+Since GP is accurate in uncertainty measurements, the use of GP in regressing latent space $\mathcal{Z}$ to action space $\mathcal{A}$ provides an accurate estimation of novice's confidence of its own action and thus saves a lot of expert queries than other variants of DAgger \cite{ensemble-dagger}.
 
 \section{Experimental Results}
 Our experiments focus on imitation learning with Gaussian Processes, the potential of using Deep Kernel Learning (CNN + GP) to estimate uncertainties from images, and eventually DevDAgger. In this section, we present experimental validation for the following claims:
@@ -173,11 +207,15 @@ To resolve the issue with the uncertainty estimation of visual GP imitation lear
 Without ground truth states as supervision, proposed by \cite{watter2015embed}, we could train a dynamics model in the latent space and force the dynamical model to be linear. As an extension to \cite{watter2015embed}, a more recent work \cite{levine2019prediction} achieves better results in terms of the latent space structure.
 
 \section{Conclusion}
-\todo[inline]{Zhihao}
+We propose DevDAgger, a data-efficient vision-based algorithm for online imitation learning. Compared with other variants of DAgger, DevDAgger takes the advantage of Gaussian Processes (GP) and GPyTorch \cite{GPyTorch} in robot state space --- action space regression tasks for accurate uncertainty measurements. With accurate uncertainty measurements, expert queries can be reduced, which makes the DAgger process data-efficient. CNN is also put in use in order to achieve vision-based robot planning and control, which is of high significance in the ongoing imitation learning research areas.
 
-{
-	\bibliographystyle{unsrt}
-	\bibliography{egbib}
-}
+In our experiments, we tested our DevDAgger algorithm on a simple cart-pole problem and demonstrated that in state-based imitation learning, GP is able to model the epistemic uncertainty well. State-based DevDAgger is also able to outperform Vanilla DAgger both in performance and in expert queries. However, more investigations are needed in visual imitation learning and visual DAgger.
+
+Future work includes enforcing a structured latent space by adding constraints to the model, and training a dynamics model in the latent space to provide more robot-specific information to the DAgger problem.
+
+	{
+		\bibliographystyle{IEEEtranN}
+		\bibliography{egbib}
+	}
 
 \end{document}
